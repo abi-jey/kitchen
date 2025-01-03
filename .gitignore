@@ -23,3 +23,8 @@ go.work.sum
 
 # env file
 .env
+
+
+# Output and deb builds
+dist/usr/local/bin/*
+!dist/usr/local/bin/.gitkeep
