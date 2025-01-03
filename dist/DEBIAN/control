@@ -1,0 +1,7 @@
+Package: kitchen
+Version: 0.1.0
+Section: base
+Priority: optional
+Architecture: amd64
+Maintainer: Abbas Jafari <abbas.jafari@powercoders.org>
+Description: We cook k8s stuff here.
