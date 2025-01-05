@@ -18,41 +18,63 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y dpkg-dev debhelper-compat dh-golang golang-go
-          dpkg-buildpackage -us -uc
 
-      - name: Get current package version
-        id: get_version
+      - name: Bump Beta Version in debian/changelog
+        id: bump_beta
         run: |
-          # Grab the version from debian/changelog
+          # Parse the existing version
           CURRENT_VERSION=$(dpkg-parsechangelog --show-field Version)
-          echo "Current version is: $CURRENT_VERSION"
+          
+          # If the current version is already a beta (e.g. 1.2.3~beta1-1ubuntu1),
+          # we can increment the beta number. If it's not beta, we turn it into a beta1.
+          # We'll do a simple parse here; adjust as needed for your version scheme.
 
-          # Check if it's something like "1.0.0~beta3" or "0.9.1~beta10"
           if [[ "$CURRENT_VERSION" =~ ^([0-9]+\.[0-9]+\.[0-9]+)~beta([0-9]+)(.*)$ ]]; then
-            BASE="${BASH_REMATCH[1]}"        # e.g. "1.0.0"
-            BETA_NUMBER="${BASH_REMATCH[2]}" # e.g. "3"
-            SUFFIX="${BASH_REMATCH[3]}"      # e.g. "" or "-1ubuntu1"
+            # It's already a beta
+            BASE="${BASH_REMATCH[1]}"        # e.g. "1.2.3"
+            BETA_NUMBER="${BASH_REMATCH[2]}" # e.g. "1"
+            SUFFIX="${BASH_REMATCH[3]}"      # e.g. "-1ubuntu1"
 
-            # Increment the beta number
-            NEW_BETA_NUMBER=$(( BETA_NUMBER + 1 ))
-            NEW_VERSION="${BASE}~beta${NEW_BETA_NUMBER}${SUFFIX}"
-
-            echo "Bumping beta version from $CURRENT_VERSION to $NEW_VERSION"
-            echo "VERSION=$NEW_VERSION" >> $GITHUB_ENV
+            NEW_BETA=$(( BETA_NUMBER + 1 ))
+            NEW_VERSION="${BASE}~beta${NEW_BETA}${SUFFIX}"
           else
-            # Not a beta version pattern; keep it as-is
-            echo "No beta pattern found in $CURRENT_VERSION, leaving version unchanged."
-            echo "VERSION=$CURRENT_VERSION" >> $GITHUB_ENV
+            # Not a beta version, so let's turn it into beta1
+            # If you have suffix like "-1ubuntu1", adapt as needed.
+            # For simplicity, assume no trailing suffix here:
+            NEW_VERSION="${CURRENT_VERSION}~beta1"
           fi
+
+          echo "Bumping version from $CURRENT_VERSION to $NEW_VERSION"
+          
+          # Use dch (Debian ChangeLog) to create a new changelog entry
+          # Note: '-l' sets a custom changelog file, but we can skip it if we use debian/changelog
+          # '-v' sets the version, '-D' sets the dist, e.g. jammy, 'unstable', etc.
+          # The message is the changelog entry summary.
+
+          dch --newversion "$NEW_VERSION" \
+              --distribution jammy \
+              --force-bad-version \
+              "Beta release $NEW_VERSION"
+
+          # Let's output the new version for next steps
+          echo "NEW_VERSION=$NEW_VERSION" >> $GITHUB_ENV
+
+      - name: Build .deb
+        run: |
+          # Now that changelog is updated with the new version, let's build.
+          dpkg-buildpackage -us -uc
+          # Move/copy .deb files to dist/
+          mkdir -p dist
+          mv ../kitchen_*.deb dist/ || true
 
       - name: Create Beta Release
         uses: softprops/action-gh-release@v1
         with:
-          tag_name: ${{ env.VERSION }}
-          release_name: "Beta Release ${{ env.VERSION }}"
+          tag_name: ${{ env.NEW_VERSION }}
+          release_name: "Beta Release ${{ env.NEW_VERSION }}"
           body: "This is a beta (pre-release) version for testing."
-          draft: false
           prerelease: true
-          files: "dist/*.deb" 
+          draft: false
+          files: "dist/*.deb"  # Attach built .deb
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
