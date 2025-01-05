@@ -25,6 +25,27 @@ go.work.sum
 .env
 
 
-# Output and deb builds
-dist/usr/local/bin/*
-!dist/usr/local/bin/.gitkeep
+# Build directories
+
+# Build time files for vendorized dependencies
+build
+dist
+pkgroot
+pkg
+bin
+vendor
+_build
+
+debian/.debhelper
+debian/kitchen*
+debian/.debhelper.log
+debian/files
+debian/kitchen.debhelper.log
+debian/kitchen.substvars
+debian/debhelper-build-stamp
+
+# Output files
+coverage.out
+
+# Ignore .local. files
+*.local.*

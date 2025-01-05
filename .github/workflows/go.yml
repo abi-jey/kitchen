@@ -1,28 +1,54 @@
-# This workflow will build a golang project
-# For more information see: https://docs.github.com/en/actions/automating-builds-and-tests/building-and-testing-go
-
-name: Go
+name: Beta Releases
 
 on:
   push:
-    branches: [ "main",  "feature/*" ]
+    branches: ["fix/*", "feature/*"]
   pull_request:
-    branches: [ "main" ]
+    branches: ["fix/*", "feature/*"]
 
 jobs:
-
-  build:
+  create-beta-release:
     runs-on: ubuntu-latest
+
     steps:
-    - uses: actions/checkout@v4
+      - name: Check out code
+        uses: actions/checkout@v4
 
-    - name: Set up Go
-      uses: actions/setup-go@v4
-      with:
-        go-version: '1.20'
+      - name: Install dpkg-dev
+        run: sudo apt-get update && sudo apt-get install -y dpkg-dev
 
-    - name: Build
-      run: go build -v ./...
+      - name: Get current package version
+        id: get_version
+        run: |
+          # Grab the version from debian/changelog
+          CURRENT_VERSION=$(dpkg-parsechangelog --show-field Version)
+          echo "Current version is: $CURRENT_VERSION"
 
-    - name: Test
-      run: go test -v ./...
+          # Check if it's something like "1.0.0~beta3" or "0.9.1~beta10"
+          if [[ "$CURRENT_VERSION" =~ ^([0-9]+\.[0-9]+\.[0-9]+)~beta([0-9]+)(.*)$ ]]; then
+            BASE="${BASH_REMATCH[1]}"        # e.g. "1.0.0"
+            BETA_NUMBER="${BASH_REMATCH[2]}" # e.g. "3"
+            SUFFIX="${BASH_REMATCH[3]}"      # e.g. "" or "-1ubuntu1"
+
+            # Increment the beta number
+            NEW_BETA_NUMBER=$(( BETA_NUMBER + 1 ))
+            NEW_VERSION="${BASE}~beta${NEW_BETA_NUMBER}${SUFFIX}"
+
+            echo "Bumping beta version from $CURRENT_VERSION to $NEW_VERSION"
+            echo "VERSION=$NEW_VERSION" >> $GITHUB_ENV
+          else
+            # Not a beta version pattern; keep it as-is
+            echo "No beta pattern found in $CURRENT_VERSION, leaving version unchanged."
+            echo "VERSION=$CURRENT_VERSION" >> $GITHUB_ENV
+          fi
+
+      - name: Create Beta Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ env.VERSION }}
+          release_name: "Beta Release ${{ env.VERSION }}"
+          body: "This is a beta (pre-release) version for testing."
+          draft: false
+          prerelease: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

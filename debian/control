@@ -1,0 +1,13 @@
+Source: kitchen
+Section: base
+Priority: optional
+Maintainer: Abbas Jafari <abbas.jafari@powercoders.org>
+Build-Depends: debhelper-compat (= 13), golang-go, dh-golang
+Standards-Version: 4.6.0
+Rules-Requires-Root: no
+
+Package: kitchen
+Architecture: amd64
+Depends: ${misc:Depends}, ${shlibs:Depends}
+Description: We cook k8s stuff here.
+ This line is part of the extended description (indent by one space).

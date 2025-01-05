@@ -1,0 +1,3 @@
+kitchen-dbgsym_0.1.2-0ubuntu1_amd64.ddeb debug optional automatic=yes
+kitchen_0.1.2-0ubuntu1_amd64.buildinfo base optional
+kitchen_0.1.2-0ubuntu1_amd64.deb base optional
