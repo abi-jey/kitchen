@@ -15,7 +15,9 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install dpkg-dev
-        run: sudo apt-get update && sudo apt-get install -y dpkg-dev
+        run: |
+          sudo apt-get update && sudo apt-get install -y dpkg-dev
+          dpkg-buildpackage -us -uc
 
       - name: Get current package version
         id: get_version
@@ -50,5 +52,6 @@ jobs:
           body: "This is a beta (pre-release) version for testing."
           draft: false
           prerelease: true
+          files: "dist/*.deb" 
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
