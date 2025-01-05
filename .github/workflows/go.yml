@@ -16,7 +16,8 @@ jobs:
 
       - name: Install dpkg-dev
         run: |
-          sudo apt-get update && sudo apt-get install -y dpkg-dev
+          sudo apt-get update
+          sudo apt-get install -y dpkg-dev debhelper-compat dh-golang golang-go
           dpkg-buildpackage -us -uc
 
       - name: Get current package version
