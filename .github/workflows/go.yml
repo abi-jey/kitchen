@@ -17,7 +17,7 @@ jobs:
       - name: Install dpkg-dev
         run: |
           sudo apt-get update
-          sudo apt-get install -y dpkg-dev debhelper-compat dh-golang golang-go
+          sudo apt-get install -y dpkg-dev debhelper-compat dh-golang golang-go devscripts
 
       - name: Bump Beta Version in debian/changelog
         id: bump_beta
