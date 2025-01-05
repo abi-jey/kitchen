@@ -67,6 +67,30 @@ jobs:
           mkdir -p dist
           mv ../kitchen_*.deb dist/ || true
 
+      - name: Generate GitHub-friendly tag
+        id: gen_tag
+        run: |
+          # We'll transform the Debian version into something like "v0.1.2-beta1-ubuntu1"
+          # by removing the tilde and reformatting so GitHub sees it as a valid semantic tag.
+          DEB_VERSION="${{ env.NEW_VERSION }}"  # e.g. "0.1.2-0ubuntu1~beta1"
+
+          # 1) Strip leading dash or + if any remain
+          # 2) Replace tilde (~) with a dash or something more standard in semver
+          # 3) (Optional) prefix with 'v'
+          
+          # Example: "0.1.2-0ubuntu1~beta1" -> "v0.1.2-0ubuntu1-beta1"
+          GH_TAG="$(echo "$DEB_VERSION" \
+            | sed 's/~beta/-beta/g' \
+            | sed 's/\([^-]\)~/\1-/g')"
+          
+          # Optionally you can remove the entire "-0ubuntu1" if you prefer
+          # GH_TAG="$(echo "$GH_TAG" | sed 's/-0ubuntu[0-9]*//g')"
+          
+          GH_TAG="v${GH_TAG}"  # add a 'v' prefix
+          
+          echo "GH_TAG=$GH_TAG"
+          echo "GH_TAG=$GH_TAG" >> $GITHUB_ENV
+
       - name: Create Beta Release
         uses: softprops/action-gh-release@v1
         with:
