@@ -94,8 +94,8 @@ jobs:
       - name: Create Beta Release
         uses: softprops/action-gh-release@v1
         with:
-          tag_name: ${{ env.NEW_VERSION }}
-          release_name: "Beta Release ${{ env.NEW_VERSION }}"
+          tag_name: ${{ env.GH_TAG }}
+          release_name: "Beta Release ${{ env.GH_TAG }}"
           body: "This is a beta (pre-release) version for testing."
           prerelease: true
           draft: false
