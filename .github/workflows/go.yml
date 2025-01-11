@@ -121,3 +121,9 @@ jobs:
           # By default, the checkout action gives you a detached HEAD,
           # so you need to push to the same ref you checked out.
           git push origin HEAD:${{ github.ref }}
+      - name: Publish to PPA
+        if: ${{ github.event.inputs.publish == 'true' }}
+        run: |
+          # Your PPA publishing steps here
+          echo "Publishing to PPA..."
+          
