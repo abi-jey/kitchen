@@ -1,3 +1,9 @@
+kitchen (0.1.2-0ubuntu1~beta1~beta1) jammy; urgency=medium
+
+  * Beta release 0.1.2-0ubuntu1~beta1~beta1
+
+ --  <runner@fv-az1109-725.c1mkocgufe1ehiau2kxkl3vnrf.dx.internal.cloudapp.net>  Sat, 11 Jan 2025 14:27:21 +0000
+
 kitchen (0.1.2-0ubuntu1~beta1) jammy; urgency=medium
 
   * Beta release 0.1.2-0ubuntu1~beta1
