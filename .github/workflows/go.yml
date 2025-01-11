@@ -1,28 +1,129 @@
-# This workflow will build a golang project
-# For more information see: https://docs.github.com/en/actions/automating-builds-and-tests/building-and-testing-go
-
-name: Go
+name: Beta Releases
 
 on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: 'Publish to ppa'
+        default: false
+        type: boolean
   push:
-    branches: [ "main",  "feature/*" ]
+    branches: ["fix/*", "feature/*"]
   pull_request:
-    branches: [ "main" ]
+    branches: ["fix/*", "feature/*"]
 
 jobs:
-
-  build:
+  create-beta-release:
     runs-on: ubuntu-latest
+
     steps:
-    - uses: actions/checkout@v4
+      - name: Check out code
+        uses: actions/checkout@v4
 
-    - name: Set up Go
-      uses: actions/setup-go@v4
-      with:
-        go-version: '1.20'
+      - name: Install dpkg-dev
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y dpkg-dev debhelper-compat dh-golang golang-go devscripts
 
-    - name: Build
-      run: go build -v ./...
+      - name: Bump Beta Version in debian/changelog
+        id: bump_beta
+        run: |
+          # Parse the existing version
+          CURRENT_VERSION=$(dpkg-parsechangelog --show-field Version)
+          
+          # If the current version is already a beta (e.g. 1.2.3~beta1-1ubuntu1),
+          # we can increment the beta number. If it's not beta, we turn it into a beta1.
+          # We'll do a simple parse here; adjust as needed for your version scheme.
 
-    - name: Test
-      run: go test -v ./...
+          if [[ "$CURRENT_VERSION" =~ ^([0-9]+\.[0-9]+\.[0-9]+)~beta([0-9]+)(.*)$ ]]; then
+            # It's already a beta
+            BASE="${BASH_REMATCH[1]}"        # e.g. "1.2.3"
+            BETA_NUMBER="${BASH_REMATCH[2]}" # e.g. "1"
+            SUFFIX="${BASH_REMATCH[3]}"      # e.g. "-1ubuntu1"
+
+            NEW_BETA=$(( BETA_NUMBER + 1 ))
+            NEW_VERSION="${BASE}~beta${NEW_BETA}${SUFFIX}"
+          else
+            # Not a beta version, so let's turn it into beta1
+            # If you have suffix like "-1ubuntu1", adapt as needed.
+            # For simplicity, assume no trailing suffix here:
+            NEW_VERSION="${CURRENT_VERSION}~beta1"
+          fi
+
+          echo "Bumping version from $CURRENT_VERSION to $NEW_VERSION"
+          
+          # Use dch (Debian ChangeLog) to create a new changelog entry
+          # Note: '-l' sets a custom changelog file, but we can skip it if we use debian/changelog
+          # '-v' sets the version, '-D' sets the dist, e.g. jammy, 'unstable', etc.
+          # The message is the changelog entry summary.
+
+          dch --newversion "$NEW_VERSION" \
+              --distribution jammy \
+              --force-bad-version \
+              "Beta release $NEW_VERSION"
+
+          # Let's output the new version for next steps
+          echo "NEW_VERSION=$NEW_VERSION" >> $GITHUB_ENV
+
+      - name: Build .deb
+        run: |
+          # Now that changelog is updated with the new version, let's build.
+          dpkg-buildpackage -us -uc
+          # Move/copy .deb files to dist/
+          mkdir -p dist
+          mv ../kitchen_*.deb dist/ || true
+
+      - name: Generate GitHub-friendly tag
+        id: gen_tag
+        run: |
+          # We'll transform the Debian version into something like "v0.1.2-beta1-ubuntu1"
+          # by removing the tilde and reformatting so GitHub sees it as a valid semantic tag.
+          DEB_VERSION="${{ env.NEW_VERSION }}"  # e.g. "0.1.2-0ubuntu1~beta1"
+
+          # 1) Strip leading dash or + if any remain
+          # 2) Replace tilde (~) with a dash or something more standard in semver
+          # 3) (Optional) prefix with 'v'
+          
+          # Example: "0.1.2-0ubuntu1~beta1" -> "v0.1.2-0ubuntu1-beta1"
+          GH_TAG="$(echo "$DEB_VERSION" \
+            | sed 's/~beta/-beta/g' \
+            | sed 's/\([^-]\)~/\1-/g')"
+          
+          # Optionally you can remove the entire "-0ubuntu1" if you prefer
+          # GH_TAG="$(echo "$GH_TAG" | sed 's/-0ubuntu[0-9]*//g')"
+          
+          GH_TAG="v${GH_TAG}"  # add a 'v' prefix
+          
+          echo "GH_TAG=$GH_TAG"
+          echo "GH_TAG=$GH_TAG" >> $GITHUB_ENV
+
+      - name: Create Beta Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ env.GH_TAG }}
+          release_name: "Beta Release ${{ env.GH_TAG }}"
+          body: "This is a beta (pre-release) version for testing."
+          prerelease: true
+          draft: false
+          files: "dist/*.deb"  # Attach built .deb
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Configure Git
+        run: |
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+
+      - name: Commit and push updated changelog
+        run: |
+          git add debian/changelog
+          git commit -m "chore: bump version in changelog"
+          # By default, the checkout action gives you a detached HEAD,
+          # so you need to push to the same ref you checked out.
+          git push origin HEAD:${{ github.ref }}
+      - name: Publish to PPA
+        if: ${{ github.event.inputs.publish == 'true' }}
+        run: |
+          # Your PPA publishing steps here
+          echo "Publishing to PPA..."
+          dput ppa:abja/kitchen dist/kitchen_*.changes

@@ -1,0 +1,36 @@
+#!/usr/bin/make -f
+
+export ORG=abi-jey
+export PKG=kitchen
+PKG_VERSION := $(shell dpkg-parsechangelog --show-field Version)
+export DH_GOPKG=github.com/$(ORG)/$(PKG)
+export DH_GO_INSTALL_MAINPACKAGES=./cmd/$(PKG)
+
+override_dh_clean:
+	dh_clean
+	rm -f ../$(PKG)_*.deb \
+	      ../$(PKG)_*.dsc \
+	      ../$(PKG)_*.tar.gz \
+	      ../$(PKG)_*.buildinfo \
+	      ../$(PKG)_*.changes
+
+override_dh_auto_build:
+	dh_auto_build
+	mkdir -p dist/$(PKG_VERSION)
+	cp ../$(PKG)_*.deb \
+	   ../$(PKG)_*.dsc \
+	   ../$(PKG)_*.tar.gz \
+	   ../$(PKG)_*.buildinfo \
+	   ../$(PKG)_*.changes \
+	   dist/$(PKG_VERSION) || true
+
+
+override_dh_dwz:
+	echo "Skipping DWZ compression"
+
+%:
+	echo "$(PKG_VERSION)" > debian/version
+	go mod vendor
+	dh $@ --buildsystem=golang --builddirectory=_build
+	mkdir -p dist
+	
