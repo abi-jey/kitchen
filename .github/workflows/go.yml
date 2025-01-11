@@ -1,16 +1,16 @@
 name: Beta Releases
 
 on:
-  push:
-    branches: ["fix/*", "feature/*"]
-  pull_request:
-    branches: ["fix/*", "feature/*"]
   workflow_dispatch:
     inputs:
       publish:
         description: 'Publish to ppa'
         default: false
         type: boolean
+  push:
+    branches: ["fix/*", "feature/*"]
+  pull_request:
+    branches: ["fix/*", "feature/*"]
 
 jobs:
   create-beta-release:
