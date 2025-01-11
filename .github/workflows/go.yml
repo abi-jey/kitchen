@@ -126,4 +126,4 @@ jobs:
         run: |
           # Your PPA publishing steps here
           echo "Publishing to PPA..."
-          
+          dput ppa:abja/kitchen dist/kitchen_*.changes
