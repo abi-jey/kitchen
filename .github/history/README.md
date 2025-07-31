@@ -15,15 +15,14 @@
 - **Focus on**: what works, what's broken, where to continue
 - **Keep technical details** that next agent needs to proceed immediately
 
-## Current Status (Latest: 0002)
+## Current Status (Latest: 0002.k8s-pre-flight-checks.md)
 
-**Ready**: SSH sessions, master node verification, dry-run worker addition  
-**Next**: Implement actual worker node setup beyond dry-run mode
+**Ready**: Pre-flight check system for k8s nodes, robust SSH sessions, enhanced logging.  
+**Next**: Fix the final `kubeadm` path validation and implement the actual node joining logic after pre-flight checks pass.
 
 ## Test Commands
 
 ```bash
 poetry install
-poetry run kitchen k8s status
-poetry run kitchen k8s nodes add --localhost --dry-run --master <IP> --user <user>
+poetry run kitchen k8s nodes add --localhost --master <IP> --user <user> --verbose
 ```

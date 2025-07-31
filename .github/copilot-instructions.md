@@ -51,7 +51,8 @@ Focus on `add_node()` function in `src/kitchen/k8s.py` lines 340-436:
 - **120 char limit**: Use `# fmt: skip` for long strings
 - **Constants**: No magic numbers, use named constants
 - **Error Handling**: SSH timeouts, connection failures, edge cases
-
+- **No External Dependencies**: Use only Python standard library, no new dependencies
+- **Use Modules**: Organize code into modules for better maintainability.
 ## Testing Infrastructure
 
 Test with real infrastructure when possible:

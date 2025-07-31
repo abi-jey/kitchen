@@ -4,7 +4,7 @@ import typer
 from typing import List, Optional
 import subprocess
 import sys
-from kitchen.k8s import k8s_app
+from kitchen.k8s.main import k8s_app
 
 app = typer.Typer(help="Kitchen - Your Kubernetes cookbook for cluster management")
 
