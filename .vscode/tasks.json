@@ -1,0 +1,146 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Install Dependencies",
+			"type": "shell",
+			"command": "poetry",
+			"args": [
+				"install"
+			],
+			"group": "build",
+			"presentation": {
+				"echo": true,
+				"reveal": "always",
+				"focus": false,
+				"panel": "shared",
+				"showReuseMessage": false,
+				"clear": false
+			},
+			"problemMatcher": []
+		},
+		{
+			"label": "Run Kitchen CLI",
+			"type": "shell",
+			"command": "poetry",
+			"args": [
+				"run",
+				"kitchen",
+				"--help"
+			],
+			"group": "test",
+			"presentation": {
+				"echo": true,
+				"reveal": "always",
+				"focus": false,
+				"panel": "shared",
+				"showReuseMessage": false,
+				"clear": false
+			},
+			"problemMatcher": []
+		},
+		{
+			"label": "Run Kitchen Hello",
+			"type": "shell",
+			"command": "poetry",
+			"args": [
+				"run",
+				"kitchen",
+				"hello"
+			],
+			"group": "test",
+			"presentation": {
+				"echo": true,
+				"reveal": "always",
+				"focus": false,
+				"panel": "shared",
+				"showReuseMessage": false,
+				"clear": false
+			},
+			"problemMatcher": []
+		},
+		{
+			"label": "Kitchen Cookbook",
+			"type": "shell",
+			"command": "poetry",
+			"args": [
+				"run",
+				"kitchen",
+				"cookbook"
+			],
+			"group": "test",
+			"presentation": {
+				"echo": true,
+				"reveal": "always",
+				"focus": false,
+				"panel": "shared",
+				"showReuseMessage": false,
+				"clear": false
+			},
+			"problemMatcher": []
+		},
+		{
+			"label": "Kitchen Setup Check",
+			"type": "shell",
+			"command": "poetry",
+			"args": [
+				"run",
+				"kitchen",
+				"setup"
+			],
+			"group": "test",
+			"presentation": {
+				"echo": true,
+				"reveal": "always",
+				"focus": false,
+				"panel": "shared",
+				"showReuseMessage": false,
+				"clear": false
+			},
+			"problemMatcher": []
+		},
+		{
+			"label": "K8s Cluster Status",
+			"type": "shell",
+			"command": "poetry",
+			"args": [
+				"run",
+				"kitchen",
+				"k8s",
+				"status"
+			],
+			"group": "test",
+			"presentation": {
+				"echo": true,
+				"reveal": "always",
+				"focus": false,
+				"panel": "shared",
+				"showReuseMessage": false,
+				"clear": false
+			},
+			"problemMatcher": []
+		},
+		{
+			"label": "K8s List Nodes",
+			"type": "shell",
+			"command": "poetry",
+			"args": [
+				"run",
+				"kitchen",
+				"k8s",
+				"nodes",
+				"list"
+			],
+			"group": "test",
+			"presentation": {
+				"echo": true,
+				"reveal": "always",
+				"focus": false,
+				"panel": "shared",
+				"showReuseMessage": false,
+				"clear": false
+			},
+			"problemMatcher": []
+		}
+	]
+}

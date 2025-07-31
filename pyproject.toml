@@ -1,0 +1,27 @@
+[project]
+name = "kitchen"
+version = "0.2.0"
+description = "Your Kubernetes cookbook for cluster management"
+authors = [
+    {name = "User", email = "user@example.com"}
+]
+readme = "README.md"
+requires-python = ">=3.8"
+dependencies = [
+    "typer>=0.16.0"
+]
+
+[project.scripts]
+kitchen = "kitchen.main:main"
+
+[tool.poetry]
+name = "kitchen"
+version = "0.2.0"
+description = "Your Kubernetes cookbook for cluster management"
+authors = ["User <user@example.com>"]
+readme = "README.md"
+packages = [{include = "kitchen", from = "src"}]
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
