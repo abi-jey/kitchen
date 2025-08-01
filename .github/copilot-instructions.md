@@ -14,7 +14,6 @@ Before making any changes, read the development history:
 
 
 ### User Experience Requirements
-- **Always ask for confirmation** before connecting to remote systems
 - **Show descriptive operation names** instead of raw commands
 - **Provide progress feedback** with emoji indicators
 - **Handle errors gracefully** with actionable messages

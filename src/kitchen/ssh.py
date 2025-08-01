@@ -10,13 +10,25 @@ import tty
 from logging import getLogger
 import getpass
 
+import typer
+
 logger = getLogger(__name__)
 
 
 class SSHSession:
-    def __init__(self, user, host):
+    def __init__(
+        self,
+        user: str,
+        host: str,
+        ssh_key_path: str | None = None,
+        verbose: bool = False,
+        elevate_privileges: bool = False,
+    ):
         self.user = user
         self.host = host
+        self.ssh_key_path = ssh_key_path
+        self.verbose = verbose
+        self.elevate_privileges = elevate_privileges
         self.pid: int | None = None
         self.fd: int | None = None
         self.buffer = b""
@@ -25,14 +37,21 @@ class SSHSession:
         self._reader_thread: threading.Thread | None = None
         self.password: str | None = None
         self.prompt: bytes = b"$ "
+        self.last_output: str = ""
 
     def __enter__(self):
-        logger.info(f"[SSH] Connecting to {self.user}@{self.host}")
+        if self.verbose:
+            typer.secho(f"[SSH] Connecting to {self.user}@{self.host}", fg=typer.colors.YELLOW)
+        else:
+            logger.info(f"[SSH] Connecting to {self.user}@{self.host}")
+
         self.pid, self.fd = pty.fork()
 
         if self.pid == 0:
             logger.info("[SSH] Child process: starting ssh...")
             command = f"ssh {self.user}@{self.host}"
+            if self.ssh_key_path:
+                command += f" -i {self.ssh_key_path}"
             args = shlex.split(command)
             try:
                 os.execvp(args[0], args)
@@ -73,8 +92,8 @@ class SSHSession:
         """
         Handles the initial connection and login process, including password prompt.
         """
-        # Wait for the password prompt with a short timeout
-        output = self.read_until(b"password: ", timeout=3)
+        # Wait for the password prompt using the method's timeout argument
+        output = self.read_until(b"password: ", timeout=timeout)
 
         # If password prompt is seen, get password and send it
         if b"password" in output.lower():
@@ -90,17 +109,66 @@ class SSHSession:
         with self._lock:
             if self.prompt in self.buffer:
                 _, self.buffer = self.buffer.split(self.prompt, 1)
-        logger.info("Login successful, at shell prompt.")
+        if self.verbose:
+            typer.secho("SSH login successful, at shell prompt.", fg=typer.colors.GREEN)
+        else:
+            logger.info("Login successful, at shell prompt.")
 
-    def run(self, command: str, timeout: float = 10.0) -> str:
+        if self.elevate_privileges:
+            typer.secho("Elevating to root privileges with 'sudo -s'...", fg=typer.colors.YELLOW)
+            self.write(b"sudo -s\n")
+            # Sudo prompt can vary, e.g., "[sudo] password for user:"
+            # We'll just look for "password for"
+            output = self.read_until(b"password for", timeout=5)
+            if b"password for" in output.lower():
+                if not self.password:
+                    # This should not happen if login required a password
+                    self.password = getpass.getpass("Sudo password: ")
+                self.write(self.password.encode() + b"\n")
+
+            # Set new prompt and wait for it
+            self.prompt = b"# "
+            self.read_until(self.prompt, timeout=10)  # Wait for the root prompt to appear
+
+            # Set KUBECONFIG for the root session
+            kubeconfig_cmd = "export KUBECONFIG=/etc/kubernetes/admin.conf\n"
+            if self.verbose:
+                typer.secho("  - Setting KUBECONFIG for root session...", fg=typer.colors.YELLOW)
+            self.write(kubeconfig_cmd.encode())
+            self.read_until(self.prompt, timeout=10)  # Wait for the prompt again to confirm command execution
+
+            # Clear the buffer after elevation and setup to ensure a clean state
+            with self._lock:
+                self.buffer = b""
+
+            if self.verbose:
+                typer.secho("Successfully elevated to root and set KUBECONFIG.", fg=typer.colors.GREEN)
+            else:
+                logger.info("Successfully elevated to root and set KUBECONFIG.")
+
+    def run(self, command: str, timeout: float = 60.0) -> str:
         """Runs a command in the SSH session and returns its output."""
-        logger.info(f"Running command: {command}")
+        if self.verbose:
+            typer.secho(f"    Executing command: {command}", fg=typer.colors.YELLOW)
+        else:
+            logger.info(f"Running command: {command}")
+
         self.write(command.encode() + b"\n")
         # The output will contain the command, its output, and the next prompt.
-        raw_output = self.read_until(self.prompt, timeout=timeout)
+        raw_output_bytes = self.read_until(self.prompt, timeout=timeout)
+        self.last_output = raw_output_bytes.decode(errors="ignore")
+
+        if self.verbose:
+            typer.secho("    [REMOTE OUTPUT]", fg=typer.colors.CYAN)
+            # Print the raw output, but skip the first line (command echo) and last line (prompt)
+            output_lines = self.last_output.splitlines()
+            if len(output_lines) > 2:
+                for line in output_lines[1:-1]:
+                    typer.echo(f"    {line}")
+            typer.secho("    [END REMOTE OUTPUT]", fg=typer.colors.CYAN)
 
         # 1. Decode to string for easier processing
-        decoded_output = raw_output.decode(errors="ignore")
+        decoded_output = self.last_output
 
         # 2. Split into lines
         lines = decoded_output.splitlines()

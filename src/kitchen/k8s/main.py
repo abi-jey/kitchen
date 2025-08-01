@@ -10,7 +10,10 @@ from typing import Dict, Optional, Tuple, Union
 
 import typer
 
+from kitchen.k8s.master import MasterNode
 from kitchen.k8s.nodes.pre_check import MasterNodePreChecks
+from kitchen.k8s.nodes.worker_pre_check import WorkerNodePreChecks
+from kitchen.k8s.worker import WorkerNode
 from kitchen.ssh import SSHSession
 
 logger = getLogger(__name__)
@@ -21,161 +24,227 @@ NodeStatus = Dict[str, Union[bool, int, str, None]]  # Master node status
 
 # Typer app definitions
 k8s_app = typer.Typer(help="Kubernetes cluster management commands")
-nodes_app = typer.Typer(help="Kubernetes node management")
-
-# Add nodes subcommand to k8s app
+nodes_app = typer.Typer(help="Manage Kubernetes nodes.")
 k8s_app.add_typer(nodes_app, name="nodes")
 
 
-def run_local_command(cmd: str, verbose: bool = False) -> Tuple[int, str, str]:
-    """Run a command locally, showing output in real-time."""
+@nodes_app.command("setup", help="Prepare a master or worker node.")
+def setup_node(
+    ctx: typer.Context,
+    master: str = typer.Option(None, "--master", help="The user@host for the master node."),
+    worker: str = typer.Option(None, "--worker", help="The user@host for the worker node."),
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable verbose output."),
+    ssh_key_path: str = typer.Option(None, "--ssh-key", help="Path to the SSH private key."),
+):
+    """
+    Connects to a node, runs pre-flight checks, and offers to install missing components.
+    """
+    # Update context with local options if provided
+    ctx.ensure_object(dict)
     if verbose:
-        typer.secho(f"Running local command: {cmd}", fg=typer.colors.YELLOW)
+        ctx.obj["verbose"] = verbose
+    if ssh_key_path:
+        ctx.obj["ssh_key_path"] = ssh_key_path
 
-    try:
-        # Using shell=True to handle pipes and other shell features
-        result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=300)  # Increased timeout
-        if verbose:
-            if result.stdout:
-                typer.secho("Output:", fg=typer.colors.GREEN)
-                typer.echo(result.stdout)
-            if result.stderr:
-                typer.secho("Error:", fg=typer.colors.RED)
-                typer.echo(result.stderr)
-        return result.returncode, result.stdout, result.stderr
-    except subprocess.TimeoutExpired:
-        return 1, "", "Command timed out"
-    except Exception as e:
-        return 1, "", str(e)
+    if not (master or worker) or (master and worker):
+        typer.secho("Please specify either --master or --worker, but not both.", fg=typer.colors.RED)
+        raise typer.Exit(1)
+
+    if master:
+        _setup_master_node(ctx, master)
+    elif worker:
+        _setup_worker_node(ctx, worker)
 
 
-@nodes_app.command("add")
+def _setup_master_node(ctx: typer.Context, master: str):
+    verbose = ctx.obj.get("verbose", False)
+    user, host = master.split("@")
+    ssh_key_path = ctx.obj.get("ssh_key_path")
+
+    typer.secho(f"🚀 Starting master node setup for {master}...", fg=typer.colors.BLUE)
+    # Always elevate privileges for setup
+    with SSHSession(user, host, ssh_key_path, verbose, elevate_privileges=True) as ssh_session:
+        typer.secho("\n📋 Running pre-flight checks on master node...", fg=typer.colors.BLUE)
+        pre_checks = MasterNodePreChecks(ssh_session, verbose)
+        all_passed_initially = pre_checks.run_checks()
+
+        # If SANs check failed, offer to fix it.
+        sans_check_passed, _ = pre_checks.results.get("Verify Tailscale IP in kube-apiserver SANs", (False, ""))
+        if not sans_check_passed and pre_checks.tailscale_ip:
+            typer.secho(
+                "\n⚠️ The Tailscale IP is not present in the kube-apiserver certificate SANs.", fg=typer.colors.YELLOW
+            )
+            if typer.confirm("Do you want to proceed with this automatic fix?"):
+                master_node = MasterNode(ssh_session, verbose)
+                fix_successful = master_node.fix_apiserver_sans(pre_checks.tailscale_ip)
+
+                if fix_successful:
+                    # Re-run all checks to get a final, clean bill of health
+                    typer.secho("\n🔄 Re-running all checks after applying fix...", fg=typer.colors.BLUE)
+                    all_passed_finally = pre_checks.run_checks()
+                    if all_passed_finally:
+                        typer.secho("✅ All pre-flight checks now pass.", fg=typer.colors.GREEN)
+                        if pre_checks.tailscale_ip:
+                            master_node = MasterNode(ssh_session, verbose)
+                            join_command = master_node.get_join_command(pre_checks.tailscale_ip)
+                            typer.secho(
+                                "\n🎉 Setup complete! Use this command to join worker nodes:",
+                                fg=typer.colors.BRIGHT_GREEN,
+                            )
+                            typer.secho(f"\n    {join_command}\n", fg=typer.colors.WHITE, bold=True)
+                        else:
+                            typer.secho(
+                                "\n❌ Could not retrieve Tailscale IP. Cannot generate join command.",
+                                fg=typer.colors.RED,
+                            )
+                            raise typer.Exit(1)
+                    else:
+                        typer.secho(
+                            "\n❌ Some checks still failed after the fix. Please review the output.",
+                            fg=typer.colors.RED,
+                        )
+                        raise typer.Exit(1)
+                else:
+                    typer.secho("\n❌ Failed to apply the fix. Aborting.", fg=typer.colors.RED)
+                    raise typer.Exit(1)
+
+        elif all_passed_initially:
+            typer.secho("✅ All pre-flight checks passed. Master node is ready.", fg=typer.colors.GREEN)
+            if pre_checks.tailscale_ip:
+                master_node = MasterNode(ssh_session, verbose)
+                join_command = master_node.get_join_command(pre_checks.tailscale_ip)
+                typer.secho("\n🎉 Setup complete! Use this command to join worker nodes:", fg=typer.colors.BRIGHT_GREEN)
+                typer.secho(f"\n    {join_command}\n", fg=typer.colors.WHITE, bold=True)
+            else:
+                typer.secho(
+                    "\n❌ Could not retrieve Tailscale IP. Cannot generate join command.",
+                    fg=typer.colors.RED,
+                )
+                raise typer.Exit(1)
+        else:
+            typer.secho("\n❌ Some pre-flight checks failed. Please review the output above.", fg=typer.colors.RED)
+            raise typer.Exit(1)
+
+
+def _setup_worker_node(ctx: typer.Context, worker: str):
+    """
+    Connects to a worker node, runs pre-flight checks, and offers to install missing components.
+    """
+    verbose = ctx.obj.get("verbose", False)
+    user, host = worker.split("@")
+    ssh_key_path = ctx.obj.get("ssh_key_path")
+
+    typer.secho(f"🚀 Starting worker node setup for {worker}...", fg=typer.colors.BLUE)
+
+    # Step 1: Initial connection and dry-run checks without elevation
+    typer.secho("\n📋 Performing initial dry-run checks...", fg=typer.colors.BLUE)
+    with SSHSession(user, host, ssh_key_path, verbose) as ssh_session:
+        pre_checks = WorkerNodePreChecks(ssh_session, verbose)
+        initial_checks_passed = pre_checks.run_checks()
+
+    if initial_checks_passed:
+        typer.secho("\n✅ All worker node checks passed. Node is ready to join.", fg=typer.colors.GREEN)
+        typer.secho("Use the join command from the 'k8s nodes setup --master' output.", fg=typer.colors.YELLOW)
+        raise typer.Exit(0)
+
+    # Step 2: Analyze failures and propose an installation plan
+    typer.secho("\n⚠️ Some pre-flight checks failed. Analyzing required installations...", fg=typer.colors.YELLOW)
+    install_plan = []
+    if not pre_checks.results.get("Check for CRI-O service", (False, ""))[0]:
+        install_plan.append("Install CRI-O container runtime")
+    if not pre_checks.results.get("Verify kubeadm installation", (False, ""))[0]:
+        install_plan.append("Install Kubernetes components (kubelet, kubeadm)")
+
+    if not install_plan:
+        typer.secho("\n❌ Checks failed, but no clear installation path. Please check the node manually.", fg=typer.colors.RED)
+        raise typer.Exit(1)
+
+    typer.secho("\nProposed installation plan:", fg=typer.colors.CYAN)
+    for item in install_plan:
+        typer.secho(f"  - {item}", fg=typer.colors.CYAN)
+
+    # Step 3: Get user confirmation and run installations
+    if not typer.confirm("\nDo you want to proceed with these installations?"):
+        typer.secho("Aborting.", fg=typer.colors.RED)
+        raise typer.Exit(1)
+
+    typer.secho("\n🔧 Proceeding with installation. This will require root privileges.", fg=typer.colors.BLUE)
+    with SSHSession(user, host, ssh_key_path, verbose, elevate_privileges=True) as elevated_session:
+        worker_node = WorkerNode(elevated_session, verbose)
+        success = True
+        if "Install CRI-O container runtime" in install_plan:
+            if not worker_node.install_crio():
+                success = False
+        if "Install Kubernetes components (kubelet, kubeadm)" in install_plan:
+            if not worker_node.install_kubernetes_components():
+                success = False
+
+        if not success:
+            typer.secho("\n❌ Installation failed. Please review the output above.", fg=typer.colors.RED)
+            raise typer.Exit(1)
+
+        # Step 4: Final verification
+        typer.secho("\n🔄 Re-running checks to verify installation...", fg=typer.colors.BLUE)
+        final_checks = WorkerNodePreChecks(elevated_session, verbose)
+        if final_checks.run_checks():
+            typer.secho("\n✅ Worker node setup complete. It is now ready to join the cluster.", fg=typer.colors.GREEN)
+        else:
+            typer.secho("\n❌ Some checks still failed after installation. Please review the output.", fg=typer.colors.RED)
+            raise typer.Exit(1)
+
+
+@nodes_app.command("add", help="Add a new node to the cluster.")
 def add_node(
-    master: Optional[str] = typer.Option(None, "--master", "-m", help="Master node IP or hostname"),
-    user: str = "root",
+    ctx: typer.Context,
+    master: str = typer.Option(..., "--master", "-m", help="Master node IP or hostname (user@host)"),
+    target: str = typer.Option(
+        "localhost",
+        "--target",
+        "-t",
+        help="Target node to add. Can be 'localhost' or a remote 'user@host' string.",
+    ),
+    user: Optional[str] = typer.Option(None, help="Override user for master or target. Do not use with user@host."),
     ssh_key: Optional[str] = None,
-    localhost: bool = False,
     dry_run: bool = False,
     verbose: bool = False,
 ) -> None:
     """Add a new node to the Kubernetes cluster."""
     typer.echo("🚀 Starting node addition process...")
 
-    if not master:
-        typer.secho("❌ Master node IP or hostname is required. Use --master option.", fg=typer.colors.RED)
+    # Validate that user is not provided with user@host format
+    if user and ("@" in master or "@" in target):
+        typer.secho(
+            "❌ Do not use the --user flag when specifying user@host in --master or --target.", fg=typer.colors.RED
+        )
         raise typer.Exit(1)
 
-    if localhost:
+    master_user, master_host = _parse_host_string(master, user)
+    target_user, target_host = _parse_host_string(target, user)
+
+    if target_host == "localhost":
         typer.echo("📍 Target node: localhost (this machine)")
+    else:
+        typer.echo(f"📍 Target node: {target_user}@{target_host}")
 
     try:
-        with SSHSession(user, master) as ssh:
-            # Step 1: Run pre-flight checks
-            typer.echo("\n📋 Step 1: Pre-flight checks on master node")
-            pre_checks = MasterNodePreChecks(ssh, verbose=verbose)
-
-            typer.secho("The following checks will be performed on the master node:", bold=True)
-            for item in pre_checks.get_check_plan():
-                typer.echo(f"  - {item}")
-
-            if not dry_run and not typer.confirm("\nDo you want to proceed with these checks?"):
-                raise typer.Abort()
-
+        # For add, we don't need to elevate privileges on the master initially
+        with SSHSession(master_user, master_host, ssh_key_path=ssh_key, verbose=verbose, elevate_privileges=False) as ssh:
+            typer.secho(f"📋 Running pre-flight checks on master node ({master_host})...", fg=typer.colors.BLUE)
+            pre_checks = MasterNodePreChecks(ssh, verbose)
             if not pre_checks.run_checks():
-                typer.secho("\n❌ Pre-flight checks failed. Cannot proceed.", fg=typer.colors.RED)
+                typer.secho(
+                    "\n❌ Pre-flight checks failed on the master node.",
+                    fg=typer.colors.RED,
+                )
+                typer.secho(
+                    "Please run 'kitchen k8s nodes setup' to diagnose and fix the issues.",
+                    fg=typer.colors.YELLOW,
+                )
                 raise typer.Exit(1)
 
-            typer.secho("\n✅ Pre-flight checks passed successfully.", fg=typer.colors.GREEN)
-
-            # Step 2: Generate join command
-            typer.echo("\n🔑 Step 2: Generate join command from master")
-            join_command_gen_cmd = "kubeadm token create --print-join-command"
-
-            if dry_run:
-                typer.echo("🔍 DRY RUN: Would run this command on master:")
-                typer.echo(f"  - {join_command_gen_cmd}")
-                typer.echo("\n🔍 DRY RUN: Would then run join command on localhost")
-                typer.echo("  - Install prerequisites (docker, kubeadm, kubectl)")
-                typer.echo("  - Configure system settings")
-                typer.echo("  - Execute kubeadm join command")
-                typer.echo("  - Verify node joined successfully")
-                typer.echo("\n✅ DRY RUN completed - no actual changes made")
-                return
-
-            join_command = ""
-            typer.secho(f"Running on master '{master}': {join_command_gen_cmd}", fg=typer.colors.YELLOW)
-            join_command_output = ssh.run(join_command_gen_cmd)
-
-            typer.secho("[REMOTE OUTPUT]", fg=typer.colors.CYAN)
-            typer.echo(join_command_output)
-            typer.secho("[END REMOTE OUTPUT]", fg=typer.colors.CYAN)
-
-            for line in join_command_output.splitlines():
-                if "kubeadm join" in line:
-                    join_command = line.strip()
-                    break
-
-            if not join_command:
-                typer.secho("❌ Failed to get join command from master.", fg=typer.colors.RED)
-                raise typer.Exit(1)
-
-            typer.secho("✅ Got join command:", fg=typer.colors.GREEN)
-            typer.echo(join_command)
-
-            # Step 3: Prepare localhost for joining
-            if localhost:
-                typer.echo("\n🔧 Step 3: Prepare localhost for joining cluster")
-
-                local_prep_commands = [
-                    "sudo apt-get update",
-                    "sudo apt-get install -y docker.io",
-                    "sudo systemctl enable docker --now",
-                    "curl -s https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo apt-key add -",
-                    'echo "deb https://apt.kubernetes.io/ kubernetes-xenial main" | sudo tee /etc/apt/sources.list.d/kubernetes.list',  # fmt: skip
-                    "sudo apt-get update",
-                    "sudo apt-get install -y kubelet kubeadm kubectl",
-                    "sudo apt-mark hold kubelet kubeadm kubectl",
-                    "sudo systemctl enable kubelet --now",
-                ]
-
-                for cmd_str in local_prep_commands:
-                    typer.secho(f"🔧 Running local command: {cmd_str}", fg=typer.colors.YELLOW)
-                    returncode, stdout, stderr = run_local_command(cmd_str, verbose)
-                    if returncode != 0:
-                        typer.secho(f"❌ Command failed: {cmd_str}", fg=typer.colors.RED)
-                        if stdout:
-                            typer.echo(stdout)
-                        if stderr:
-                            typer.echo(stderr)
-                        raise typer.Exit(1)
-                    typer.secho("✅ Success", fg=typer.colors.GREEN)
-
-                # Step 4: Join the cluster
-                typer.echo("\n🔗 Step 4: Join the cluster")
-                join_cmd_with_sudo = f"sudo {join_command}"
-                typer.secho(f"🔧 Running local command: {join_cmd_with_sudo}", fg=typer.colors.YELLOW)
-
-                returncode, stdout, stderr = run_local_command(join_cmd_with_sudo, verbose)
-                if returncode != 0:
-                    typer.secho("❌ Join failed:", fg=typer.colors.RED)
-                    if stdout:
-                        typer.echo(stdout)
-                    if stderr:
-                        typer.echo(stderr)
-                    raise typer.Exit(1)
-
-                typer.secho("✅ Successfully joined cluster!", fg=typer.colors.GREEN)
-                typer.echo(stdout)
-
-                # Step 5: Verify node joined
-                typer.echo("\n✅ Step 5: Verify node joined successfully")
-                typer.secho("Checking nodes on master...", fg=typer.colors.YELLOW)
-                nodes = ssh.run("kubectl get nodes -o wide")
-                typer.secho("🎉 Node addition completed successfully!", fg=typer.colors.GREEN)
-                typer.echo("📊 Current cluster nodes:")
-                for line in nodes.split("\n"):
-                    if line.strip():
-                        typer.echo(f"   {line}")
+            typer.secho("✅ Pre-flight checks passed on master node.", fg=typer.colors.GREEN)
+            # TODO: Implement the logic to add the new node, now that the master is verified.
+            typer.secho("\n🚧 Node joining logic not yet implemented.", fg=typer.colors.YELLOW)
 
     except typer.Abort:
         typer.echo("Aborted.")
@@ -191,9 +260,17 @@ def list_nodes(
 ) -> None:
     """List all nodes in the Kubernetes cluster."""
     if master:
-        typer.echo(f"📋 Listing nodes from master: {master}")
+        master_user = user
+        master_host = master
+        if "@" in master:
+            provided_user, provided_host = master.split("@", 1)
+            master_host = provided_host
+            if user == "root":
+                master_user = provided_user
+
+        typer.echo(f"📋 Listing nodes from master: {master_host}")
         try:
-            with SSHSession(user, master) as ssh:
+            with SSHSession(master_user, master_host) as ssh:
                 typer.secho("Getting all nodes...", fg=typer.colors.YELLOW)
                 nodes_wide = ssh.run("kubectl get nodes -o wide")
                 typer.secho("📊 Nodes:", fg=typer.colors.GREEN)

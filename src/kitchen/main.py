@@ -5,11 +5,27 @@ from typing import List, Optional
 import subprocess
 import sys
 from kitchen.k8s.main import k8s_app
+from kitchen.k8s.worker import WorkerNode
+from kitchen.ssh import SSHSession
 
 app = typer.Typer(help="Kitchen - Your Kubernetes cookbook for cluster management")
 
 # Add the K8s sub-commands
 app.add_typer(k8s_app, name="k8s")
+
+
+@app.callback()
+def main_callback(
+    ctx: typer.Context,
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable verbose output."),
+    ssh_key_path: str = typer.Option(None, "--ssh-key", help="Path to the SSH private key."),
+):
+    """
+    Kitchen is a CLI tool for managing Kubernetes clusters with Tailscale integration.
+    """
+    ctx.ensure_object(dict)
+    ctx.obj["verbose"] = verbose
+    ctx.obj["ssh_key_path"] = ssh_key_path
 
 
 @app.command()
