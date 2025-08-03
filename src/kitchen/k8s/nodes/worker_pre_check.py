@@ -2,6 +2,7 @@
 This module defines the pre-flight checks for a Kubernetes worker node.
 """
 from typing import Any, Dict, List, Tuple
+import time
 
 import typer
 
@@ -63,6 +64,7 @@ class WorkerNodePreChecks:
             if not self.verbose:
                 typer.echo(f"  - {name}...")
 
+            time.sleep(2)
             # For checks that are expected to fail on a fresh node, we don't want to pollute the output
             # with error messages if the command itself fails (e.g., service not found).
             output = self.session.run(command)
@@ -85,10 +87,11 @@ class WorkerNodePreChecks:
         return all_passed
 
     def _validate_is_active(self, output: str) -> CheckResult:
-        """Validates that a service status is 'active'."""
-        if "active" in output.strip().lower():
+        """Validates that a service status is exactly 'active'."""
+        status = output.strip().lower()
+        if status == "active":
             return True, "Service is active."
-        return False, "Service is not active or not found."
+        return False, f"Service is not active (status: '{status}')."
 
     def _validate_path_exists(self, output: str) -> CheckResult:
         """Validates that a command exists in the path."""
