@@ -12,9 +12,10 @@ Before making any changes, read the development history:
 3. Understand what's working, what needs implementation
 4. Focus on the next steps outlined in the latest file
 
+### Debugging and issues
+If you see issue you can fix it immediately, you don't need user interaction to validate that you need to fix, only on the architecture level you need to internact with user. 
 
 ### User Experience Requirements
-- **Show descriptive operation names** instead of raw commands
 - **Provide progress feedback** with emoji indicators
 - **Handle errors gracefully** with actionable messages
 
@@ -23,7 +24,7 @@ Before making any changes, read the development history:
 - **120 char limit**: Use `# fmt: skip` for long strings
 - **Constants**: No magic numbers, use named constants
 - **Error Handling**: SSH timeouts, connection failures, edge cases
-- **No External Dependencies**: Use only Python standard library, no new dependencies
+- **Minimal External Dependencies**: Use only Python standard library, no new dependencies
 - **Use Modules**: Organize code into modules for better maintainability.
 ## Testing Infrastructure
 

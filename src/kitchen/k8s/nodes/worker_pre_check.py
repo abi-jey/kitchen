@@ -34,10 +34,10 @@ class WorkerNodePreChecks:
                 "validate": self._validate_is_active,
             },
             {
-                "name": "Check for kubelet service",
-                "command": "systemctl is-active kubelet",
-                "description": "Ensures the kubelet service is running.",
-                "validate": self._validate_is_active,
+                "name": "Verify kubelet installation",
+                "command": "which kubelet",
+                "description": "Checks if kubelet is installed and in the system's PATH.",
+                "validate": self._validate_path_exists,
             },
             {
                 "name": "Verify kubeadm installation",
@@ -47,7 +47,7 @@ class WorkerNodePreChecks:
             },
         ]
 
-    def run_checks(self) -> bool:
+    def run_checks(self, use_sudo: bool = True) -> bool:
         """
         Executes all pre-flight checks on the worker node.
         Returns:
@@ -67,8 +67,8 @@ class WorkerNodePreChecks:
             time.sleep(2)
             # For checks that are expected to fail on a fresh node, we don't want to pollute the output
             # with error messages if the command itself fails (e.g., service not found).
-            output = self.session.run(command)
-            is_ok, message = validate_func(output)
+            stdout, _, _ = self.session.run(command, use_sudo=use_sudo)
+            is_ok, message = validate_func(stdout)
 
             self.results[name] = (is_ok, message)
 

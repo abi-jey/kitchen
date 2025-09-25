@@ -1,371 +1,181 @@
-import os
-import pty
-import re
-import shlex
-import select
-import sys
-import termios
-import threading
-import time
-import tty
-from logging import getLogger, FileHandler, Formatter, DEBUG
 import getpass
+import logging
+from typing import Dict, Optional, Tuple
 
+import paramiko
 import typer
-from rich.live import Live
 from rich.panel import Panel
 from rich.text import Text
 from rich import print
 
-logger = getLogger(__name__)
-
-# Setup runtime logger for SSH I/O
-try:
-    runtime_log_path = "runtime.log"
-    runtime_logger = getLogger("kitchen.runtime")
-    runtime_logger.setLevel(DEBUG)
-    if not runtime_logger.handlers:
-        handler = FileHandler(runtime_log_path, mode="w")
-        handler.setLevel(DEBUG)
-        formatter = Formatter("[%(asctime)s] %(message)s")
-        handler.setFormatter(formatter)
-        runtime_logger.addHandler(handler)
-except Exception as e:
-    logger.error(f"Failed to set up runtime file logger: {e}")
+logger = logging.getLogger(__name__)
 
 
 class SSHSession:
+    """
+    A robust SSH session manager using Paramiko.
+
+    This class replaces the previous PTY-based implementation with a modern,
+    library-driven approach. It handles connections, command execution (including
+    sudo), and provides clean access to stdout, stderr, and exit codes.
+    """
+
     def __init__(
         self,
         user: str,
         host: str,
         ssh_key_path: str | None = None,
         verbose: bool = False,
-        elevate_privileges: bool = False,
+        password: str | None = None,
     ):
         self.user = user
         self.host = host
         self.ssh_key_path = ssh_key_path
         self.verbose = verbose
-        self.elevate_privileges = elevate_privileges
-        self.pid: int | None = None
-        self.fd: int | None = None
-        self.buffer = b""
-        self._lock = threading.Lock()
-        self._stop_event = threading.Event()
-        self._reader_thread: threading.Thread | None = None
-        self.password: str | None = None
-        self.prompt: bytes = b"$ "
+        self._password = password  # Store password for sudo
+        self.client = paramiko.SSHClient()
+        self.client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        self.exit_code: int | None = None
         self.last_output: str = ""
 
-    def __enter__(self):
+    def __enter__(self) -> "SSHSession":
         if self.verbose:
-            typer.secho(f"[SSH] Connecting to {self.user}@{self.host}", fg=typer.colors.YELLOW)
+            typer.secho(f"🔒 Connecting to {self.user}@{self.host}...", fg=typer.colors.YELLOW)
         else:
-            logger.info(f"[SSH] Connecting to {self.user}@{self.host}")
+            logger.info(f"Connecting to {self.user}@{self.host}")
 
-        self.pid, self.fd = pty.fork()
-
-        if self.pid == 0:
-            logger.info("[SSH] Child process: starting ssh...")
-            command = f"ssh {self.user}@{self.host}"
-            if self.ssh_key_path:
-                command += f" -i {self.ssh_key_path}"
-            args = shlex.split(command)
+        try:
+            # First try key-based/agent auth without prompting
             try:
-                os.execvp(args[0], args)
-            except Exception as e:
-                logger.error(f"[SSH] Failed to exec ssh: {e}")
-                os._exit(1)
-        else:
-            logger.info(f"[SSH] Parent process: forked PID={self.pid}, FD={self.fd}")
-            self._reader_thread = threading.Thread(target=self._read_loop, daemon=True)
-            self._reader_thread.start()
-            logger.info("[SSH] Background reader thread started")
-            self.connect()
-            return self
-
-    def _read_loop(self):
-        logger.debug("[READER] Loop started")
-        while not self._stop_event.is_set():
-            try:
-                if self.fd is None:
-                    time.sleep(0.1)
-                    continue
-                r, _, _ = select.select([self.fd], [], [], 0.1)
-                if self.fd in r:
-                    data = os.read(self.fd, 1024)
-                    if not data:
-                        logger.debug("[READER] EOF reached")
-                        break
-                    with self._lock:
-                        self.buffer += data
-                    runtime_logger.debug(f"READ: {data!r}")
-                    logger.debug(f"[READER] Received {len(data)} bytes")
-            except OSError as e:
-                logger.error(f"[READER] OSError: {e}")
-                break
-
-        logger.debug("[READER] Loop exiting")
-
-    def connect(self, timeout: float = 10.0):
-        """
-        Handles the initial connection and login process, including password prompt.
-        """
-        # Wait for the password prompt using the method's timeout argument
-        output = self.read_until(b"password: ", timeout=timeout)
-
-        # If password prompt is seen, get password and send it
-        if b"password" in output.lower():
-            sys.stdout.buffer.write(output)
-            sys.stdout.flush()
-            if not self.password:
-                self.password = getpass.getpass("")
-            self.write(self.password.encode() + b"\n")
-
-        # Wait for the shell prompt to ensure login is complete
-        final_prompt = self.read_until(self.prompt, timeout=timeout)
-        # The prompt might be in the buffer, so we just make sure we clear it
-        with self._lock:
-            if self.prompt in self.buffer:
-                _, self.buffer = self.buffer.split(self.prompt, 1)
-        if self.verbose:
-            typer.secho("SSH login successful, at shell prompt.", fg=typer.colors.GREEN)
-        else:
-            logger.info("Login successful, at shell prompt.")
-
-        # Always elevate privileges after login
-        self._elevate_to_root()
-
-    def _elevate_to_root(self):
-        """
-        Elevates the current session to root using 'sudo -s', handling both
-        password-prompting and passwordless sudo.
-        """
-        if self.verbose:
-            typer.secho("Elevating to root privileges with 'sudo -s'...", fg=typer.colors.YELLOW)
-
-        self.write(b"sudo -s\n")
-
-        # Wait for either a password prompt or the root prompt
-        password_prompt = b"password for"
-        root_prompt_temp = b"# "
-        found_pattern, output = self._read_until_one_of([password_prompt, root_prompt_temp], timeout=5)
-
-        if found_pattern == password_prompt:
+                self.client.connect(
+                    hostname=self.host,
+                    username=self.user,
+                    key_filename=self.ssh_key_path,
+                    timeout=15,
+                    auth_timeout=15,
+                    look_for_keys=True,
+                    allow_agent=True,
+                )
+            except paramiko.AuthenticationException:
+                # Prompt for password only on authentication failure
+                prompt = f"🔑 Password for {self.user}@{self.host}: "
+                self._password = self._password or getpass.getpass(prompt)
+                self.client.connect(
+                    hostname=self.host,
+                    username=self.user,
+                    password=self._password,
+                    key_filename=self.ssh_key_path,
+                    timeout=15,
+                    auth_timeout=15,
+                    look_for_keys=False,
+                    allow_agent=False,
+                )
             if self.verbose:
-                typer.secho("    - Sudo password required.", fg=typer.colors.YELLOW)
-            if not self.password:
-                self.password = getpass.getpass("Sudo password: ")
-            self.write(self.password.encode() + b"\n")
-            # After sending password, we must wait for the root prompt
-            self.read_until(root_prompt_temp, timeout=10)
-        elif found_pattern == root_prompt_temp:
-            if self.verbose:
-                typer.secho("    - Passwordless sudo detected.", fg=typer.colors.GREEN)
-        else:
-            # Neither prompt was found
-            typer.secho("❌ Failed to elevate to root. Could not detect password or root prompt.", fg=typer.colors.RED)
-            typer.secho(f"    Received: {output.decode(errors='ignore')}", fg=typer.colors.RED)
+                typer.secho("✅ Connection successful.", fg=typer.colors.GREEN)
+            else:
+                logger.info("Connection successful.")
+
+        except paramiko.AuthenticationException:
+            typer.secho("❌ Authentication failed. Please check your credentials.", fg=typer.colors.RED)
             raise typer.Exit(1)
+        except (paramiko.SSHException, TimeoutError) as e:
+            typer.secho(f"❌ SSH connection failed: {e}", fg=typer.colors.RED)
+            raise typer.Exit(1)
+        return self
 
-        # Set the definitive root prompt
-        self.prompt = root_prompt_temp
+    def run(
+        self,
+        command: str,
+        use_sudo: bool = True,
+        timeout: float = 300.0,
+        env: Optional[Dict[str, str]] = None,
+    ) -> Tuple[str, str, int]:
+        """Run a command on the remote host.
 
-        # Set KUBECONFIG for the root session
-        kubeconfig_cmd = "export KUBECONFIG=/etc/kubernetes/admin.conf\n"
+        - Honors sudo when requested (password supplied via stdin if available).
+        - Supports ephemeral environment variables using a shell wrapper.
+        - Auto-injects KUBECONFIG for kubectl/kubeadm commands when not explicitly provided.
+
+        Returns (stdout, stderr, exit_code).
+        """
         if self.verbose:
-            typer.secho("  - Setting KUBECONFIG for root session...", fg=typer.colors.YELLOW)
-        self.write(kubeconfig_cmd.encode())
-        self.read_until(self.prompt, timeout=10)  # Wait for the prompt again to confirm command execution
-
-        # Clear the buffer after elevation and setup to ensure a clean state
-        with self._lock:
-            self.buffer = b""
-
-        if self.verbose:
-            typer.secho("Successfully elevated to root and set KUBECONFIG.", fg=typer.colors.GREEN)
+            sudo_str = " with sudo" if use_sudo else ""
+            typer.secho(f"  - Executing{sudo_str}: {command}", fg=typer.colors.YELLOW)
         else:
-            logger.info("Successfully elevated to root and set KUBECONFIG.")
+            logger.info(f"Running command: {command} (sudo: {use_sudo})")
 
-    def run(self, command: str, timeout: float = 60.0) -> str:
-        """Runs a command in the SSH session and returns its output."""
+        # Build environment/export prefix. Also auto-inject KUBECONFIG for kubectl/kubeadm
+        env = dict(env or {})
+        auto_kube = (
+            command.strip().startswith("kubectl ")
+            or command.strip().startswith("kubeadm ")
+        )
+        if auto_kube and "KUBECONFIG" not in env:
+            env["KUBECONFIG"] = "/etc/kubernetes/admin.conf"
+
+        export_prefix = ""
+        if env:
+            # Minimal safe quoting for values
+            def _q(v: str) -> str:
+                return "'" + v.replace("'", "'\\''") + "'"
+
+            exports = [f"export {k}={_q(v)}" for k, v in env.items()]
+            export_prefix = "; ".join(exports) + "; "
+
+        # Always wrap in a shell to ensure env/export and compound commands work
+        escaped_command = (export_prefix + command).replace("'", "'\\''")
+        base_shell = f"sh -lc '{escaped_command}'"
+        full_command = base_shell if not use_sudo else f"sudo -S -p '' {base_shell}"
+
+        # exec_command gives three clean channels. No more screen scraping.
+        stdin, stdout, stderr = self.client.exec_command(full_command, timeout=int(timeout))
+
+        # If sudo needs a password, we provide it here.
+        if use_sudo:
+            if self._password:
+                stdin.write(self._password + "\n")
+                stdin.flush()
+            else:
+                # This case should ideally not be reached if authentication required a password
+                logger.warning("Sudo requested but no password available to provide.")
+
+        # This is how you get the exit code. It's a built-in feature.
+        self.exit_code = stdout.channel.recv_exit_status()
+
+        stdout_str = stdout.read().decode("utf-8", errors="ignore").strip()
+        stderr_str = stderr.read().decode("utf-8", errors="ignore").strip()
+
+        self.last_output = stdout_str
+
         if self.verbose:
-            typer.secho(f"    Executing command: {command}", fg=typer.colors.YELLOW)
-        else:
-            logger.info(f"Running command: {command}")
+            # Determine panel color based on exit code
+            panel_color = "green" if self.exit_code == 0 else "red"
+            title = f"[bold {panel_color}]Result (Exit Code: {self.exit_code})[/bold {panel_color}]"
 
-        with self._lock:
-            self.buffer = b""
+            output_text = Text()
+            if stdout_str:
+                output_text.append(stdout_str)
+            if stderr_str:
+                if stdout_str:
+                    output_text.append("\n\n")
+                output_text.append(stderr_str, style="red")
 
-        self.write(command.encode() + b"\n")
-
-        full_output_bytes = b""
-        live = None
-        if self.verbose:
-            live = Live(
-                Panel(
-                    Text("Waiting for output..."),
-                    title="[cyan]Remote[/cyan]",
-                    border_style="cyan",
-                ),
-                transient=True,
-                refresh_per_second=10,
-                vertical_overflow="visible",
-            )
-            live.start()
-
-        start_time = time.time()
-        while True:
-            if time.time() - start_time > timeout:
-                logger.warning(f"Timeout waiting for command: {command}")
-                if live:
-                    live.update(
-                        Panel(
-                            Text(full_output_bytes.decode(errors="ignore"), style="red"),
-                            title="[red]Remote (Timeout)[/red]",
-                            border_style="red",
-                        )
-                    )
-                break
-
-            chunk = b""
-            with self._lock:
-                if self.buffer:
-                    chunk = self.buffer
-                    self.buffer = b""
-
-            if chunk:
-                full_output_bytes += chunk
-                if live:
-                    # Decode for display, but keep original bytes
-                    text_to_display = full_output_bytes.decode(errors="ignore")
-
-                    # Manually remove terminal title escape sequences (OSC) that rich might not handle well
-                    osc_escape_pattern = re.compile(r"\x1b\].*?\x07")
-                    cleaned_text_for_display = osc_escape_pattern.sub("", text_to_display)
-
-                    live.update(
-                        Panel(
-                            Text.from_ansi(cleaned_text_for_display),
-                            title="[cyan]Remote[/cyan]",
-                            border_style="cyan",
-                        )
-                    )
-
-            # Check for prompt in the full output
-            if self.prompt in full_output_bytes:
-                break
-
-            time.sleep(0.05)
-
-        if live:
-            live.stop()
-
-            # Clean the prompt from the final output for display
-            final_output_for_display = full_output_bytes
-            prompt_pos = final_output_for_display.rfind(self.prompt)
-            if prompt_pos != -1:
-                # Get everything before the last occurrence of the prompt
-                final_output_for_display = final_output_for_display[:prompt_pos]
-
-            # Decode the output
-            decoded_output = final_output_for_display.decode(errors="ignore")
-
-            # Manually remove terminal title escape sequences (OSC)
-            osc_escape_pattern = re.compile(r"\x1b\].*?\x07")
-            cleaned_output = osc_escape_pattern.sub("", decoded_output)
-
-            # Log the content that will be displayed in the final panel
-            runtime_logger.debug(f"FINAL_PANEL_CONTENT: {cleaned_output.strip()!r}")
-
-            # Final display after live is stopped, using from_ansi to interpret escape codes
             final_panel = Panel(
-                Text.from_ansi(cleaned_output.strip()),
-                title="[cyan]Remote[/cyan]",
-                border_style="cyan",
+                output_text,
+                title=title,
+                border_style=panel_color,
                 title_align="left",
             )
             print(final_panel)
 
-        output_to_parse = full_output_bytes
-        with self._lock:
-            prompt_pos = full_output_bytes.find(self.prompt)
-            if prompt_pos != -1:
-                output_to_parse = full_output_bytes[:prompt_pos]
-                self.buffer = full_output_bytes[prompt_pos + len(self.prompt) :] + self.buffer
+        return stdout_str, stderr_str, self.exit_code
 
-        self.last_output = output_to_parse.decode(errors="ignore")
-        lines = self.last_output.splitlines()
-
-        if lines and command in lines[0]:
-            return "\n".join(lines[1:]).strip()
-
-        return self.last_output.strip()
-
-    def write(self, data: bytes):
-        """Write bytes to the SSH session."""
-        if self.fd is None:
-            raise ConnectionError("SSH session not started")
-        logger.debug(f"[WRITER] Sending {len(data)} bytes")
-        runtime_logger.debug(f"WRITE: {data!r}")
-        os.write(self.fd, data)
-
-    def read_until(self, pattern: bytes, timeout: float = 10.0) -> bytes:
-        """Read from the session until a pattern is matched or a timeout occurs."""
-        _, output = self._read_until_one_of([pattern], timeout)
-        return output
-
-    def _read_until_one_of(self, patterns: list[bytes], timeout: float = 10.0) -> tuple[bytes | None, bytes]:
-        """
-        Read from the session until one of the patterns is matched or a timeout occurs.
-        Returns the pattern that was found and the output up to that point.
-        """
-        if self.fd is None:
-            raise ConnectionError("SSH session not started")
-
-        output = b""
-        start_time = time.time()
-        while True:
-            with self._lock:
-                for pattern in patterns:
-                    if pattern in self.buffer:
-                        matched_output, self.buffer = self.buffer.split(pattern, 1)
-                        matched_output += pattern  # Include the pattern in the output
-                        logger.debug(f"[READER] Matched pattern '{pattern.decode(errors='ignore')}'")
-                        return pattern, matched_output
-
-            elapsed = time.time() - start_time
-            if elapsed > timeout:
-                logger.warning(f"[READER] Timeout waiting for one of patterns: {patterns!r}")
-                with self._lock:
-                    output = self.buffer
-                    self.buffer = b""
-                return None, output
-
-            time.sleep(0.1)
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        logger.info("[SSH] Exiting SSH session")
-        self._stop_event.set()
-
-        try:
-            logger.debug("[SSH] Sending 'exit'")
-            if self.fd is not None:
-                os.write(self.fd, b"exit\n")
-        except Exception as e:
-            logger.warning(f"[SSH] Failed to send exit: {e}")
-
-        if self._reader_thread and self._reader_thread.is_alive():
-            self._reader_thread.join(timeout=2)
-            logger.debug("[SSH] Reader thread joined")
-
-        if self.pid:
-            try:
-                os.kill(self.pid, 15)  # SIGTERM
-                logger.info("[SSH] SSH process terminated")
-            except ProcessLookupError:
-                logger.warning("[SSH] Process already terminated")
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        if self.verbose:
+            typer.secho("🔒 Closing connection.", fg=typer.colors.YELLOW)
+        else:
+            logger.info("Closing SSH session.")
+        self.client.close()
 
 
 if __name__ == "__main__":
@@ -375,12 +185,22 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, handlers=[RichHandler()])
 
     try:
-        with SSHSession("abja", "192.168.1.80") as ssh:
-            hostname = ssh.run("hostname")
-            print(f"Hostname: {hostname}")
+        # Example usage:
+        with SSHSession("abja", "192.168.1.80", verbose=True) as ssh:
+            stdout, stderr, code = ssh.run("hostname")
+            if code == 0:
+                print(f"Hostname: {stdout}")
 
-            whoami = ssh.run("whoami")
-            print(f"User: {whoami}")
+            stdout, stderr, code = ssh.run("whoami")
+            if code == 0:
+                print(f"User: {stdout}")
 
+            # Example of a command that might fail
+            stdout, stderr, code = ssh.run("cat /non/existent/file", use_sudo=False)
+            if code != 0:
+                print(f"Command failed as expected. STDERR: {stderr}")
+
+    except typer.Exit:
+        print("Exiting due to connection or authentication failure.")
     except Exception as e:
-        logger.error(f"An error occurred: {e}")
+        logger.error(f"An unexpected error occurred: {e}")

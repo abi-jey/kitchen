@@ -77,8 +77,8 @@ class MasterNodePreChecks:
             if not self.verbose:
                 typer.echo(f"  - {name}...")
 
-            output = self.session.run(command)
-            is_ok, message = validate_func(output)
+            stdout, _, _ = self.session.run(command)
+            is_ok, message = validate_func(stdout)
 
             self.results[name] = (is_ok, message)
 
