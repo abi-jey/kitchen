@@ -21,6 +21,7 @@ class MasterNodePreChecks:
         self.session = session
         self.verbose = verbose
         self.results: Dict[str, CheckResult] = {}
+        self.tailscale_ip: str | None = None
         self.checks: List[Dict[str, Any]] = [
             {
                 "name": "Check for kubelet service",
@@ -46,6 +47,12 @@ class MasterNodePreChecks:
                 "description": "Checks if kubeadm is installed and in the system's PATH.",
                 "validate": self._validate_path_exists,
             },
+            {
+                "name": "Verify Tailscale IP in kube-apiserver SANs",
+                "command": "openssl x509 -in /etc/kubernetes/pki/apiserver.crt -noout -text",
+                "description": "Ensures the Tailscale IP is in the kube-apiserver certificate's Subject Alternative Names (SANs).",
+                "validate": self._validate_sans,
+            },
         ]
 
     def get_check_plan(self) -> List[str]:
@@ -67,26 +74,30 @@ class MasterNodePreChecks:
             command = check["command"]
             validate_func = check["validate"]
 
-            typer.echo(f"  - {name}...")
-            if self.verbose:
-                typer.secho(f"    Executing command: {command}", fg=typer.colors.YELLOW)
+            if not self.verbose:
+                typer.echo(f"  - {name}...")
 
-            output = self.session.run(command)
-
-            if self.verbose:
-                typer.secho("    [REMOTE OUTPUT]", fg=typer.colors.CYAN)
-                typer.echo(f"    {output}")
-                typer.secho("    [END REMOTE OUTPUT]", fg=typer.colors.CYAN)
-
-            is_ok, message = validate_func(output)
+            stdout, _, _ = self.session.run(command)
+            is_ok, message = validate_func(stdout)
 
             self.results[name] = (is_ok, message)
 
             if is_ok:
-                typer.secho(f"    ✔ OK: {message}", fg=typer.colors.GREEN)
+                if self.verbose:
+                    typer.secho(f"  - {name}: ✔ OK", fg=typer.colors.GREEN)
+                else:
+                    typer.secho(f"    ✔ OK: {message}", fg=typer.colors.GREEN)
             else:
-                typer.secho(f"    ❌ FAIL: {message}", fg=typer.colors.RED)
+                if self.verbose:
+                    typer.secho(f"  - {name}: ❌ FAIL", fg=typer.colors.RED)
+                else:
+                    typer.secho(f"    ❌ FAIL: {message}", fg=typer.colors.RED)
                 all_passed = False
+                # If not verbose, show the full output on failure for context
+                if not self.verbose:
+                    typer.secho("    [REMOTE OUTPUT]", fg=typer.colors.CYAN)
+                    typer.echo(self.session.last_output)
+                    typer.secho("    [END REMOTE OUTPUT]", fg=typer.colors.CYAN)
 
         return all_passed
 
@@ -102,12 +113,35 @@ class MasterNodePreChecks:
         ip_match = re.search(r"\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b", output)
         if ip_match:
             ip = ip_match.group(0)
+            self.tailscale_ip = ip
             return True, f"Got IP: {ip}"
         return False, f"Could not find a valid IPv4 address in output: '{output.strip()}'"
 
     def _validate_path_exists(self, output: str) -> CheckResult:
         """Validates that a command exists in the path."""
-        path = output.strip()
+        # The output might contain the command echo, so we take the last non-empty line
+        lines = [line for line in output.strip().split("\n") if line.strip()]
+        if not lines:
+            return False, "No output from command."
+
+        path = lines[-1].strip()
         if path.startswith("/") and "not found" not in path.lower():
             return True, f"Executable found at: {path}"
         return False, f"Executable not found in PATH. Command output: '{path}'"
+
+    def _validate_sans(self, output: str) -> CheckResult:
+        """Validates that the Tailscale IP is in the SANs of the kube-apiserver certificate."""
+        if not self.tailscale_ip:
+            return False, "Could not verify SANs because Tailscale IP was not found."
+
+        # The SANs can be spread across multiple lines, so we search for the section.
+        sans_match = re.search(r"X509v3 Subject Alternative Name:((?:.|\n)*?)(?:X509v3|$)", output)
+        if not sans_match:
+            return False, "Could not find 'Subject Alternative Name' section in certificate."
+
+        sans_section = sans_match.group(1)
+        # Check for the IP address within the SANs section
+        if f"IP Address:{self.tailscale_ip}" in sans_section:
+            return True, f"Tailscale IP ({self.tailscale_ip}) found in certificate SANs."
+
+        return False, f"Tailscale IP ({self.tailscale_ip}) not found in certificate SANs."
