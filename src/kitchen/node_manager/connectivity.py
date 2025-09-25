@@ -1,4 +1,4 @@
-"""Tailscale connectivity monitoring."""
+"""Direct ping connectivity monitoring."""
 from __future__ import annotations
 
 import asyncio
@@ -10,12 +10,13 @@ from datetime import datetime
 logger = logging.getLogger(__name__)
 
 
-class TailscaleConnectivityChecker:
-    """Handles Tailscale ping connectivity measurements."""
+class DirectConnectivityChecker:
+    """Handles direct ping connectivity measurements."""
     
-    # Regex pattern to parse tailscale ping output
+    # Regex pattern to parse ping output - looks for time measurements in ping reply lines
     PING_PATTERN = re.compile(
-        r"pong from (.+) \((.+?)\) via (.+) in (\d+(?:\.\d+)?)ms"
+        r"(?:time[=<]|time=)(\d+(?:\.\d+)?)(?:\s*ms)?",
+        re.IGNORECASE
     )
     
     def __init__(self, ping_count: int = 4, timeout_seconds: int = 5) -> None:
@@ -29,7 +30,7 @@ class TailscaleConnectivityChecker:
         self.timeout_seconds = timeout_seconds
     
     async def ping_node(self, target_ip: str, node_name: str = "") -> Dict[str, Any]:
-        """Ping a node via Tailscale and measure connectivity.
+        """Ping a node directly and measure connectivity.
         
         Args:
             target_ip: IP address to ping
@@ -43,12 +44,11 @@ class TailscaleConnectivityChecker:
         start_time = datetime.utcnow()
         
         try:
-            # Build tailscale ping command
+            # Build direct ping command
             cmd = [
-                "tailscale",
                 "ping",
-                "--c", str(self.ping_count),
-                "--timeout", f"{self.timeout_seconds}s",
+                "-c", str(self.ping_count),
+                "-W", str(self.timeout_seconds),
                 target_ip
             ]
             
@@ -93,7 +93,7 @@ class TailscaleConnectivityChecker:
                 "success": False,
                 "latency_ms": None,
                 "packet_loss": 100.0,
-                "error_message": "tailscale command not found",
+                "error_message": "ping command not found",
                 "error_code": 127,
                 "measured_at": start_time,
             }
@@ -115,7 +115,7 @@ class TailscaleConnectivityChecker:
         return_code: int,
         start_time: datetime
     ) -> Dict[str, Any]:
-        """Parse tailscale ping command output.
+        """Parse direct ping command output.
         
         Args:
             stdout: Standard output from ping command
@@ -143,33 +143,53 @@ class TailscaleConnectivityChecker:
         latencies = []
         successful_pings = 0
         
+        # Look for round trip times in ping reply lines (not summary lines)
         for line in lines:
+            # Skip summary lines that don't contain individual ping responses
+            if "packets transmitted" in line or "packet loss" in line or "round-trip" in line:
+                continue
+                
             match = self.PING_PATTERN.search(line)
             if match:
-                latency_str = match.group(4)
-                try:
-                    latency = float(latency_str)
-                    latencies.append(latency)
-                    successful_pings += 1
-                except ValueError:
-                    logger.warning(f"Failed to parse latency: {latency_str}")
+                latency_str = match.group(1)
+                if latency_str:
+                    try:
+                        latency = float(latency_str)
+                        latencies.append(latency)
+                        successful_pings += 1
+                    except ValueError:
+                        logger.warning(f"Failed to parse latency: {latency_str}")
+        
+        # Also look for packet loss information in ping summary
+        packet_loss_percentage = 0.0
+        for line in lines:
+            # Look for packet loss summary (e.g., "2 received, 0% packet loss")
+            if "packet loss" in line.lower():
+                loss_match = re.search(r"(\d+(?:\.\d+)?)%", line)
+                if loss_match:
+                    try:
+                        packet_loss_percentage = float(loss_match.group(1))
+                    except ValueError:
+                        pass
+                break
         
         # Calculate statistics
         if latencies:
             avg_latency = sum(latencies) / len(latencies)
-            packet_loss = ((self.ping_count - successful_pings) / self.ping_count) * 100
-            success = packet_loss < 100  # Success if at least one packet got through
+            # Use packet loss from summary if available, otherwise calculate from responses
+            if packet_loss_percentage == 0.0 and successful_pings < self.ping_count:
+                packet_loss_percentage = ((self.ping_count - successful_pings) / self.ping_count) * 100
+            success = packet_loss_percentage < 100  # Success if at least one packet got through
         else:
-            # No successful pings found, but command succeeded
-            # This might happen with some tailscale versions or network issues
+            # No successful pings found
             avg_latency = None
-            packet_loss = 100.0
+            packet_loss_percentage = 100.0
             success = False
         
         return {
             "success": success,
             "latency_ms": avg_latency,
-            "packet_loss": packet_loss,
+            "packet_loss": packet_loss_percentage,
             "error_message": None if success else "No successful pings",
             "error_code": None,
             "measured_at": start_time,
@@ -236,14 +256,14 @@ class TailscaleConnectivityChecker:
             }
             return {name: error_result for name in node_names}
     
-    def is_tailscale_available(self) -> bool:
-        """Check if tailscale command is available.
+    def is_ping_available(self) -> bool:
+        """Check if ping command is available.
         
         Returns:
-            True if tailscale is available, False otherwise.
+            True if ping is available, False otherwise.
         """
         try:
             import shutil
-            return shutil.which("tailscale") is not None
+            return shutil.which("ping") is not None
         except Exception:
             return False

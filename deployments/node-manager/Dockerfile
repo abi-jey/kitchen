@@ -7,9 +7,6 @@ RUN apt-get update && apt-get install -y \
     gnupg \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Tailscale
-RUN curl -fsSL https://tailscale.com/install.sh | sh
-
 # Create virtual environment
 RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
@@ -21,11 +18,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Production stage  
 FROM python:3.12-slim
 
-# Install system dependencies and Tailscale
+# Install system dependencies (ping is included in iputils-ping)
 RUN apt-get update && apt-get install -y \
     curl \
-    gnupg \
-    && curl -fsSL https://tailscale.com/install.sh | sh \
+    iputils-ping \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy virtual environment from builder

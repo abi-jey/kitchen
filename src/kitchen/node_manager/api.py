@@ -66,7 +66,7 @@ class HealthStatus(BaseModel):
     """Health status of the node manager."""
     healthy: bool
     kubernetes_healthy: bool
-    tailscale_available: bool
+    ping_available: bool
     worker_running: bool
     monitoring_task_running: bool
     connectivity_task_running: bool

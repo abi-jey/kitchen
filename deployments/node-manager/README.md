@@ -1,11 +1,11 @@
 # Kitchen Node Manager
 
-A FastAPI service for monitoring Kubernetes nodes and their Tailscale connectivity.
+A FastAPI service for monitoring Kubernetes nodes and their network connectivity.
 
 ## Features
 
 - **Node Monitoring**: Periodically fetches all Kubernetes nodes and tracks their status
-- **Connectivity Checking**: Measures round-trip latency via Tailscale ping
+- **Connectivity Checking**: Measures round-trip latency via direct ping
 - **REST API**: Provides endpoints for querying node status and connectivity metrics
 - **Database Storage**: Stores node snapshots and connectivity records in PostgreSQL
 - **High Availability**: Designed for deployment with HPA and pod disruption budgets
@@ -25,7 +25,6 @@ The node manager consists of:
 
 - Kubernetes cluster with RBAC enabled
 - PostgreSQL database (included in deployment)
-- Tailscale installed on nodes (for connectivity monitoring)
 
 ### Quick Start
 

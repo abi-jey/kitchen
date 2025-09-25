@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from kitchen.node_manager.database import AsyncSessionLocal
 from kitchen.node_manager.k8s_client import KubernetesNodeClient
-from kitchen.node_manager.connectivity import TailscaleConnectivityChecker
+from kitchen.node_manager.connectivity import DirectConnectivityChecker
 from kitchen.node_manager.models import NodeSnapshot, NodeConnectivity
 
 logger = logging.getLogger(__name__)
@@ -39,7 +39,7 @@ class NodeMonitorWorker:
         self.connectivity_interval = connectivity_interval
         
         self.k8s_client = KubernetesNodeClient()
-        self.connectivity_checker = TailscaleConnectivityChecker(
+        self.connectivity_checker = DirectConnectivityChecker(
             ping_count=ping_count,
             timeout_seconds=ping_timeout
         )
@@ -221,7 +221,7 @@ class NodeMonitorWorker:
             logger.warning(f"Marked node {node.name} as unavailable")
     
     async def _check_node_connectivity(self) -> None:
-        """Check connectivity to all nodes via Tailscale ping."""
+        """Check connectivity to all nodes via direct ping."""
         try:
             # Get nodes with IP addresses for pinging
             async with AsyncSessionLocal() as session:
@@ -235,7 +235,7 @@ class NodeMonitorWorker:
                     logger.info("No nodes available for connectivity check")
                     return
                 
-                # Build target list (prefer Tailscale IPs, fall back to internal IPs)
+                # Build target list (prefer Tailscale IPs if available, otherwise use internal IPs)
                 ping_targets = {}
                 for node in nodes:
                     target_ip = node.tailscale_ip or node.internal_ip
@@ -289,7 +289,7 @@ class NodeMonitorWorker:
             "monitoring_task_running": self._monitoring_task and not self._monitoring_task.done() if self._monitoring_task else False,
             "connectivity_task_running": self._connectivity_task and not self._connectivity_task.done() if self._connectivity_task else False,
             "kubernetes_healthy": self.k8s_client.is_healthy(),
-            "tailscale_available": self.connectivity_checker.is_tailscale_available(),
+            "tailscale_available": self.connectivity_checker.is_ping_available(),
             "monitoring_interval": self.monitoring_interval,
             "connectivity_interval": self.connectivity_interval,
         }
