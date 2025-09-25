@@ -3,7 +3,7 @@ set -e
 
 # Build and test the Kitchen Node Manager Docker image
 
-echo "🔨 Building Kitchen Node Manager Docker image..."
+echo "🔨 Building Kitchen Node Manager Docker image with Poetry..."
 
 # Build the image
 docker build -f Dockerfile -t kitchen/node-manager:latest ../../
@@ -39,3 +39,5 @@ echo ""
 echo "3. Deploy to Kubernetes:"
 echo "   kubectl apply -f postgres.yaml"
 echo "   kubectl apply -f k8s-manifests.yaml"
+echo ""
+echo "Note: This Docker image uses Poetry for dependency management from pyproject.toml"
