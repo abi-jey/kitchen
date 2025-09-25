@@ -1,4 +1,4 @@
-"""Database configuration and session management."""
+"""Database configuration and session management using SQLModel."""
 from __future__ import annotations
 
 import os
@@ -6,8 +6,7 @@ from typing import AsyncGenerator
 
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 from sqlalchemy.pool import NullPool
-
-from kitchen.node_manager.models import Base
+from sqlmodel import SQLModel
 
 # Database URL from environment with sensible defaults
 DATABASE_URL = os.getenv(
@@ -35,7 +34,7 @@ AsyncSessionLocal = async_sessionmaker(
 async def init_db() -> None:
     """Initialize database tables."""
     async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+        await conn.run_sync(SQLModel.metadata.create_all)
 
 
 async def get_db_session() -> AsyncGenerator[AsyncSession, None]:

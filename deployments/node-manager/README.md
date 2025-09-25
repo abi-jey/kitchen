@@ -24,33 +24,26 @@ The node manager consists of:
 ### Prerequisites
 
 - Kubernetes cluster with RBAC enabled
-- PostgreSQL database (included in deployment)
+- PostgreSQL database (external - not included in deployment)
 
 ### Quick Start
 
-1. **Deploy PostgreSQL** (optional - use existing database):
-   ```bash
-   kubectl apply -f postgres.yaml
-   ```
-
-2. **Update database configuration** in `node-manager-secrets`:
+1. **Configure your PostgreSQL database** and update the connection string in `node-manager-secrets`:
    ```bash
    kubectl edit secret node-manager-secrets -n kitchen-system
    ```
 
-3. **Deploy the node manager**:
+2. **Deploy the node manager**:
    ```bash
    kubectl apply -f k8s-manifests.yaml
    ```
 
-4. **Build and push Docker image**:
-   ```bash
-   # From repository root
-   docker build -f deployments/node-manager/Dockerfile -t your-registry/kitchen/node-manager:latest .
-   docker push your-registry/kitchen/node-manager:latest
+3. **Docker image is automatically built and pushed via GitHub Actions**:
+   - Image location: `ghcr.io/abi-jey/kitchen/node-manager:latest`
+   - Tagged with commit hash on each push to main branch
    
    # Update image in deployment
-   kubectl set image deployment/node-manager node-manager=your-registry/kitchen/node-manager:latest -n kitchen-system
+   kubectl set image deployment/node-manager node-manager=ghcr.io/abi-jey/kitchen/node-manager:latest -n kitchen-system
    ```
 
 ### Configuration

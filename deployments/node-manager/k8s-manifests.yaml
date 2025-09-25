@@ -150,7 +150,7 @@ spec:
       
       containers:
       - name: node-manager
-        image: kitchen/node-manager:latest
+        image: ghcr.io/abi-jey/kitchen/node-manager:latest
         imagePullPolicy: Always
         
         ports:
