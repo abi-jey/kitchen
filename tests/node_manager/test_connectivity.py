@@ -1,0 +1,165 @@
+"""Tests for Tailscale connectivity checker."""
+from __future__ import annotations
+
+import pytest
+import asyncio
+from datetime import datetime
+from unittest.mock import Mock, patch, AsyncMock
+
+from kitchen.node_manager.connectivity import TailscaleConnectivityChecker
+
+
+@pytest.fixture
+def connectivity_checker():
+    """Create a TailscaleConnectivityChecker instance for testing."""
+    return TailscaleConnectivityChecker(ping_count=2, timeout_seconds=3)
+
+
+def test_connectivity_checker_init():
+    """Test TailscaleConnectivityChecker initialization."""
+    checker = TailscaleConnectivityChecker(ping_count=4, timeout_seconds=5)
+    assert checker.ping_count == 4
+    assert checker.timeout_seconds == 5
+
+
+def test_connectivity_checker_defaults():
+    """Test TailscaleConnectivityChecker default values."""
+    checker = TailscaleConnectivityChecker()
+    assert checker.ping_count == 4
+    assert checker.timeout_seconds == 5
+
+
+def test_parse_ping_output_success(connectivity_checker):
+    """Test parsing successful ping output."""
+    stdout = """pong from test-node (100.64.1.10) via DERP(region-1) in 12.5ms
+pong from test-node (100.64.1.10) via DERP(region-1) in 13.2ms"""
+    
+    result = connectivity_checker._parse_ping_output(
+        stdout, "", 0, datetime.utcnow()
+    )
+    
+    assert result["success"] is True
+    assert result["latency_ms"] == pytest.approx(12.85, rel=1e-2)  # (12.5 + 13.2) / 2
+    assert result["packet_loss"] == 0.0
+    assert result["error_message"] is None
+
+
+def test_parse_ping_output_partial_success(connectivity_checker):
+    """Test parsing ping output with packet loss."""
+    stdout = """pong from test-node (100.64.1.10) via DERP(region-1) in 12.5ms"""
+    
+    result = connectivity_checker._parse_ping_output(
+        stdout, "", 0, datetime.utcnow()
+    )
+    
+    assert result["success"] is True
+    assert result["latency_ms"] == 12.5
+    assert result["packet_loss"] == 50.0  # 1 success out of 2 expected
+    assert result["error_message"] is None
+
+
+def test_parse_ping_output_failure(connectivity_checker):
+    """Test parsing failed ping output."""
+    result = connectivity_checker._parse_ping_output(
+        "", "timeout", 1, datetime.utcnow()
+    )
+    
+    assert result["success"] is False
+    assert result["latency_ms"] is None
+    assert result["packet_loss"] == 100.0
+    assert result["error_message"] == "timeout"
+    assert result["error_code"] == 1
+
+
+def test_parse_ping_output_no_responses(connectivity_checker):
+    """Test parsing ping output with no successful responses."""
+    stdout = """Failed to connect to test-node"""
+    
+    result = connectivity_checker._parse_ping_output(
+        stdout, "", 0, datetime.utcnow()
+    )
+    
+    assert result["success"] is False
+    assert result["latency_ms"] is None
+    assert result["packet_loss"] == 100.0
+    assert result["error_message"] == "No successful pings"
+
+
+@pytest.mark.asyncio
+async def test_ping_node_command_not_found(connectivity_checker):
+    """Test ping_node when tailscale command is not found."""
+    with patch('asyncio.create_subprocess_exec', side_effect=FileNotFoundError):
+        result = await connectivity_checker.ping_node("100.64.1.10", "test-node")
+    
+    assert result["success"] is False
+    assert result["error_message"] == "tailscale command not found"
+    assert result["error_code"] == 127
+
+
+@pytest.mark.asyncio 
+async def test_ping_node_timeout(connectivity_checker):
+    """Test ping_node with timeout."""
+    mock_process = Mock()
+    mock_process.communicate = AsyncMock(side_effect=asyncio.TimeoutError)
+    mock_process.kill = AsyncMock()
+    mock_process.wait = AsyncMock()
+    
+    with patch('asyncio.create_subprocess_exec', return_value=mock_process), \
+         patch('asyncio.wait_for', side_effect=asyncio.TimeoutError):
+        
+        result = await connectivity_checker.ping_node("100.64.1.10", "test-node")
+    
+    assert result["success"] is False
+    assert "timeout" in result["error_message"].lower()
+    assert result["error_code"] == -1
+
+
+@pytest.mark.asyncio
+async def test_batch_ping_nodes_empty(connectivity_checker):
+    """Test batch_ping_nodes with empty input."""
+    result = await connectivity_checker.batch_ping_nodes({})
+    assert result == {}
+
+
+@pytest.mark.asyncio
+async def test_batch_ping_nodes_success(connectivity_checker):
+    """Test batch_ping_nodes with successful pings."""
+    mock_result = {
+        "success": True,
+        "latency_ms": 12.5,
+        "packet_loss": 0.0,
+        "error_message": None,
+        "error_code": None,
+        "measured_at": datetime.utcnow(),
+    }
+    
+    with patch.object(connectivity_checker, 'ping_node', return_value=mock_result):
+        targets = {"node1": "100.64.1.10", "node2": "100.64.1.11"}
+        results = await connectivity_checker.batch_ping_nodes(targets)
+    
+    assert len(results) == 2
+    assert "node1" in results
+    assert "node2" in results
+    assert results["node1"]["success"] is True
+    assert results["node2"]["success"] is True
+
+
+def test_is_tailscale_available_true():
+    """Test is_tailscale_available when tailscale is available."""
+    with patch('shutil.which', return_value='/usr/bin/tailscale'):
+        checker = TailscaleConnectivityChecker()
+        assert checker.is_tailscale_available() is True
+
+
+def test_is_tailscale_available_false():
+    """Test is_tailscale_available when tailscale is not available.""" 
+    with patch('shutil.which', return_value=None):
+        checker = TailscaleConnectivityChecker()
+        assert checker.is_tailscale_available() is False
+
+
+def test_is_tailscale_available_exception():
+    """Test is_tailscale_available when shutil.which raises exception."""
+    with patch('shutil.which', side_effect=Exception("test error")):
+        checker = TailscaleConnectivityChecker()
+        assert checker.is_tailscale_available() is False
