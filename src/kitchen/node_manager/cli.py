@@ -16,11 +16,23 @@ node_manager_app = typer.Typer(help="Node manager commands")
 def deploy_node_manager(
     namespace: str = typer.Option("kitchen-system", "--namespace", "-n", help="Kubernetes namespace"),
     image: str = typer.Option("ghcr.io/abi-jey/kitchen/node-manager:latest", "--image", help="Docker image to deploy"),
+    tag: Optional[str] = typer.Option(None, "--tag", help="Docker image tag (overrides image tag)"),
     database_url: Optional[str] = typer.Option(None, "--database-url", help="PostgreSQL connection string"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Show what would be deployed without applying"),
 ) -> None:
     """Deploy node manager to Kubernetes cluster."""
     typer.secho("🚀 Deploying Kitchen Node Manager...", fg=typer.colors.BLUE)
+    
+    # Handle tag parameter - override image tag if provided
+    final_image = image
+    if tag:
+        # Extract image name without tag and append new tag
+        if ":" in image:
+            image_name = image.rsplit(":", 1)[0]
+        else:
+            image_name = image
+        final_image = f"{image_name}:{tag}"
+        typer.echo(f"📝 Using custom tag: {tag} -> {final_image}")
     
     # Check prerequisites
     if not database_url:
@@ -51,13 +63,13 @@ def deploy_node_manager(
     with open(manifests_file, 'r') as f:
         manifest_content = f.read()
     
-    # Update image reference if different from default
-    if image != "ghcr.io/abi-jey/kitchen/node-manager:latest":
-        typer.echo(f"📝 Using custom image: {image}")
+    # Update image reference
+    if final_image != "ghcr.io/abi-jey/kitchen/node-manager:latest":
+        typer.echo(f"📝 Using custom image: {final_image}")
         # Replace the image in the deployment
         manifest_content = manifest_content.replace(
             "image: ghcr.io/abi-jey/kitchen/node-manager:latest",
-            f"image: {image}"
+            f"image: {final_image}"
         )
     
     # Update database configuration if provided
@@ -86,6 +98,9 @@ def deploy_node_manager(
                 typer.secho("✅ Node Manager deployed", fg=typer.colors.GREEN)
                 typer.echo(f"Monitor deployment: kubectl get pods -n {namespace} -l app=node-manager")
                 typer.echo(f"Check logs: kubectl logs -n {namespace} deployment/node-manager -f")
+                
+                # Show which image was deployed
+                typer.echo(f"📦 Deployed image: {final_image}")
                 
                 if not database_url:
                     typer.echo("")
@@ -199,3 +214,40 @@ def api_access(
         raise typer.Exit(1)
     except KeyboardInterrupt:
         typer.secho("\n👋 Port forwarding stopped", fg=typer.colors.YELLOW)
+
+
+@node_manager_app.command("tags")
+def list_available_tags() -> None:
+    """Show information about available Docker image tags."""
+    typer.secho("📦 Docker Image Tags for Node Manager", fg=typer.colors.BLUE)
+    typer.echo("")
+    
+    typer.echo("🏷️  Available tag formats:")
+    typer.echo("  latest                    - Latest stable release")
+    typer.echo("  main                      - Latest from main branch")
+    typer.echo("  <commit-hash>             - Specific commit (8 chars)")
+    typer.echo("  v<version>                - Specific version tag")
+    typer.echo("")
+    
+    typer.echo("📝 Usage examples:")
+    typer.echo("  # Deploy latest stable version")
+    typer.echo("  kitchen node-manager deploy")
+    typer.echo("")
+    typer.echo("  # Deploy with specific tag")
+    typer.echo("  kitchen node-manager deploy --tag main")
+    typer.echo("  kitchen node-manager deploy --tag a1b2c3d4")
+    typer.echo("")
+    typer.echo("  # Deploy with full custom image")
+    typer.echo("  kitchen node-manager deploy --image my-registry/node-manager:custom")
+    typer.echo("")
+    
+    typer.echo("🔍 To see available tags in the registry:")
+    typer.echo("  Visit: https://github.com/abi-jey/kitchen/pkgs/container/kitchen%2Fnode-manager")
+    typer.echo("  Or use: docker image ls ghcr.io/abi-jey/kitchen/node-manager")
+    
+    typer.echo("")
+    typer.secho("💡 Tips:", fg=typer.colors.CYAN)
+    typer.echo("  • 'latest' tag is automatically updated with stable releases")
+    typer.echo("  • 'main' tag is updated on every push to main branch")
+    typer.echo("  • Commit hash tags allow deploying specific versions")
+    typer.echo("  • Use --tag parameter for convenience, --image for full control")
