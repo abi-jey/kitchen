@@ -1,8 +1,10 @@
 """CLI commands for node manager integration."""
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
+import tempfile
 from typing import Optional
 
 import typer
@@ -13,64 +15,102 @@ node_manager_app = typer.Typer(help="Node manager commands")
 @node_manager_app.command("deploy")
 def deploy_node_manager(
     namespace: str = typer.Option("kitchen-system", "--namespace", "-n", help="Kubernetes namespace"),
-    image: str = typer.Option("kitchen/node-manager:latest", "--image", help="Docker image to deploy"),
+    image: str = typer.Option("ghcr.io/abi-jey/kitchen/node-manager:latest", "--image", help="Docker image to deploy"),
     database_url: Optional[str] = typer.Option(None, "--database-url", help="PostgreSQL connection string"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Show what would be deployed without applying"),
 ) -> None:
     """Deploy node manager to Kubernetes cluster."""
     typer.secho("🚀 Deploying Kitchen Node Manager...", fg=typer.colors.BLUE)
     
-    # Get deployment files path
+    # Check prerequisites
+    if not database_url:
+        typer.secho("⚠️  PostgreSQL Configuration Required", fg=typer.colors.YELLOW)
+        typer.echo("The node manager requires an external PostgreSQL database.")
+        typer.echo("Please provide a database URL or configure the secret manually:")
+        typer.echo("")
+        typer.echo("Option 1: Use --database-url parameter:")
+        typer.echo("  kitchen node-manager deploy --database-url 'postgresql+asyncpg://user:pass@host:5432/db'")
+        typer.echo("")
+        typer.echo("Option 2: Configure Kubernetes secret after deployment:")
+        typer.echo(f"  kubectl edit secret node-manager-secrets -n {namespace}")
+        typer.echo("")
+        typer.echo("Continuing with default secret configuration...")
+    
+    # Get the manifest file from the package
     import kitchen.node_manager
-    import os
     
     node_manager_dir = os.path.dirname(kitchen.node_manager.__file__)
-    manifests_dir = os.path.join(os.path.dirname(node_manager_dir), "..", "..", "deployments", "node-manager")
+    manifests_file = os.path.join(node_manager_dir, "manifests", "k8s-manifests.yaml")
     
-    # Deploy PostgreSQL first (if not using external database)
-    if not database_url:
-        typer.echo("📊 Deploying PostgreSQL...")
-        postgres_file = os.path.join(manifests_dir, "postgres.yaml")
-        cmd = ["kubectl", "apply", "-f", postgres_file]
+    if not os.path.exists(manifests_file):
+        typer.secho(f"❌ Manifest file not found: {manifests_file}", fg=typer.colors.RED)
+        typer.echo("This indicates a package installation issue.")
+        raise typer.Exit(1)
+    
+    # Read and potentially modify manifests
+    with open(manifests_file, 'r') as f:
+        manifest_content = f.read()
+    
+    # Update image reference if different from default
+    if image != "ghcr.io/abi-jey/kitchen/node-manager:latest":
+        typer.echo(f"📝 Using custom image: {image}")
+        # Replace the image in the deployment
+        manifest_content = manifest_content.replace(
+            "image: ghcr.io/abi-jey/kitchen/node-manager:latest",
+            f"image: {image}"
+        )
+    
+    # Update database configuration if provided
+    if database_url:
+        typer.echo("📝 Updating database configuration...")
+        manifest_content = manifest_content.replace(
+            'DATABASE_URL: "postgresql+asyncpg://kitchen_user:kitchen_password@postgres:5432/kitchen_node_manager"',
+            f'DATABASE_URL: "{database_url}"'
+        )
+    
+    # Write to temporary file for deployment
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as tmp_file:
+        tmp_file.write(manifest_content)
+        tmp_manifest_path = tmp_file.name
+    
+    try:
+        # Deploy node manager
+        typer.echo("🔧 Deploying Node Manager...")
+        cmd = ["kubectl", "apply", "-f", tmp_manifest_path]
         if dry_run:
             cmd.append("--dry-run=client")
         
         try:
             result = subprocess.run(cmd, capture_output=True, text=True, check=True)
             if not dry_run:
-                typer.secho("✅ PostgreSQL deployed", fg=typer.colors.GREEN)
+                typer.secho("✅ Node Manager deployed", fg=typer.colors.GREEN)
+                typer.echo(f"Monitor deployment: kubectl get pods -n {namespace} -l app=node-manager")
+                typer.echo(f"Check logs: kubectl logs -n {namespace} deployment/node-manager -f")
+                
+                if not database_url:
+                    typer.echo("")
+                    typer.secho("📋 Next Steps:", fg=typer.colors.BLUE) 
+                    typer.echo("1. Configure your PostgreSQL database connection:")
+                    typer.echo(f"   kubectl edit secret node-manager-secrets -n {namespace}")
+                    typer.echo("2. Update the DATABASE_URL with your PostgreSQL connection string")
+                    typer.echo("3. Restart the deployment to pick up the new configuration:")
+                    typer.echo(f"   kubectl rollout restart deployment/node-manager -n {namespace}")
             else:
-                typer.echo("PostgreSQL would be deployed:")
+                typer.echo("Node Manager would be deployed:")
                 typer.echo(result.stdout)
         except subprocess.CalledProcessError as e:
-            typer.secho(f"❌ Failed to deploy PostgreSQL: {e.stderr}", fg=typer.colors.RED)
+            typer.secho(f"❌ Failed to deploy Node Manager: {e.stderr}", fg=typer.colors.RED)
             raise typer.Exit(1)
-    
-    # Update image in manifests
-    manifests_file = os.path.join(manifests_dir, "k8s-manifests.yaml")
-    typer.echo(f"📝 Using image: {image}")
-    
-    # Deploy node manager
-    typer.echo("🔧 Deploying Node Manager...")
-    cmd = ["kubectl", "apply", "-f", manifests_file]
-    if dry_run:
-        cmd.append("--dry-run=client")
-    
-    try:
-        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        
         if not dry_run:
-            typer.secho("✅ Node Manager deployed", fg=typer.colors.GREEN)
-            typer.echo(f"Monitor deployment: kubectl get pods -n {namespace} -l app=node-manager")
-            typer.echo(f"Check logs: kubectl logs -n {namespace} deployment/node-manager -f")
-        else:
-            typer.echo("Node Manager would be deployed:")
-            typer.echo(result.stdout)
-    except subprocess.CalledProcessError as e:
-        typer.secho(f"❌ Failed to deploy Node Manager: {e.stderr}", fg=typer.colors.RED)
-        raise typer.Exit(1)
+            typer.secho("🎉 Deployment complete!", fg=typer.colors.GREEN)
     
-    if not dry_run:
-        typer.secho("🎉 Deployment complete!", fg=typer.colors.GREEN)
+    finally:
+        # Clean up temporary file
+        try:
+            os.unlink(tmp_manifest_path)
+        except OSError:
+            pass
 
 
 @node_manager_app.command("status")

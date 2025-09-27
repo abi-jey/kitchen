@@ -23,6 +23,7 @@ description = "Your Kubernetes cookbook for cluster management"
 authors = ["User <user@example.com>"]
 readme = "README.md"
 packages = [{include = "kitchen", from = "src"}]
+include = ["src/kitchen/node_manager/manifests/*.yaml"]
 
 [tool.poetry.dependencies]
 python = "^3.9"
