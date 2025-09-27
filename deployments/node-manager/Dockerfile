@@ -21,8 +21,8 @@ WORKDIR /app
 # Copy poetry files
 COPY pyproject.toml poetry.lock ./
 
-# Install dependencies
-RUN poetry install --only=main --no-root && rm -rf $POETRY_CACHE_DIR
+# Install dependencies (main CLI dependencies + node-manager group)
+RUN poetry install --only=main,node-manager --no-root && rm -rf $POETRY_CACHE_DIR
 
 # Production stage  
 FROM python:3.12-slim
