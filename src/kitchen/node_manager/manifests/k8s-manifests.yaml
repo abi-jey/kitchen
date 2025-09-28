@@ -157,57 +157,12 @@ spec:
         - containerPort: 8000
           name: http
         
+        envFrom:
+        - configMapRef:
+            name: node-manager-config
+        - secretRef:
+            name: node-manager-secrets
         env:
-        # Load config from ConfigMap
-        - name: HOST
-          valueFrom:
-            configMapKeyRef:
-              name: node-manager-config
-              key: HOST
-        - name: PORT
-          valueFrom:
-            configMapKeyRef:
-              name: node-manager-config
-              key: PORT
-        - name: LOG_LEVEL
-          valueFrom:
-            configMapKeyRef:
-              name: node-manager-config
-              key: LOG_LEVEL
-        - name: UVICORN_LOG_LEVEL
-          valueFrom:
-            configMapKeyRef:
-              name: node-manager-config
-              key: UVICORN_LOG_LEVEL
-        - name: MONITORING_INTERVAL
-          valueFrom:
-            configMapKeyRef:
-              name: node-manager-config
-              key: MONITORING_INTERVAL
-        - name: CONNECTIVITY_INTERVAL
-          valueFrom:
-            configMapKeyRef:
-              name: node-manager-config
-              key: CONNECTIVITY_INTERVAL
-        - name: PING_COUNT
-          valueFrom:
-            configMapKeyRef:
-              name: node-manager-config
-              key: PING_COUNT
-        - name: PING_TIMEOUT
-          valueFrom:
-            configMapKeyRef:
-              name: node-manager-config
-              key: PING_TIMEOUT
-        
-        # Load database config from Secret
-        - name: DATABASE_URL
-          valueFrom:
-            secretKeyRef:
-              name: node-manager-secrets
-              key: DATABASE_URL
-        
-        # Kubernetes API configuration
         - name: KUBERNETES_SERVICE_HOST
           value: kubernetes.default.svc
         - name: KUBERNETES_SERVICE_PORT
