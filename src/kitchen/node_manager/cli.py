@@ -19,6 +19,7 @@ def deploy_node_manager(
     tag: Optional[str] = typer.Option(None, "--tag", help="Docker image tag (overrides image tag)"),
     database_url: Optional[str] = typer.Option(None, "--database-url", help="PostgreSQL connection string"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Show what would be deployed without applying"),
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable verbose output"),
 ) -> None:
     """Deploy node manager to Kubernetes cluster."""
     typer.secho("🚀 Deploying Kitchen Node Manager...", fg=typer.colors.BLUE)
@@ -94,6 +95,13 @@ def deploy_node_manager(
         
         try:
             result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+            if verbose:
+                typer.echo(f"📋 Command executed: {' '.join(cmd)}")
+                if result.stdout:
+                    typer.echo(f"📄 Output:\n{result.stdout}")
+                if result.stderr:
+                    typer.echo(f"⚠️  Warnings:\n{result.stderr}")
+                    
             if not dry_run:
                 typer.secho("✅ Node Manager deployed", fg=typer.colors.GREEN)
                 typer.echo(f"Monitor deployment: kubectl get pods -n {namespace} -l app=node-manager")
@@ -115,6 +123,8 @@ def deploy_node_manager(
                 typer.echo(result.stdout)
         except subprocess.CalledProcessError as e:
             typer.secho(f"❌ Failed to deploy Node Manager: {e.stderr}", fg=typer.colors.RED)
+            if verbose and result.stdout:
+                typer.echo(f"📄 Additional output:\n{result.stdout}")
             raise typer.Exit(1)
         
         if not dry_run:
@@ -132,20 +142,40 @@ def deploy_node_manager(
 def node_manager_status(
     namespace: str = typer.Option("kitchen-system", "--namespace", "-n", help="Kubernetes namespace"),
     api_port: int = typer.Option(8000, "--port", help="Port for API access"),
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable verbose output"),
 ) -> None:
     """Check node manager status."""
     typer.secho("📊 Checking Node Manager status...", fg=typer.colors.BLUE)
     
     # Check pods
     try:
-        result = subprocess.run(
-            ["kubectl", "get", "pods", "-n", namespace, "-l", "app=node-manager"],
-            capture_output=True, text=True, check=True
-        )
+        cmd = ["kubectl", "get", "pods", "-n", namespace, "-l", "app=node-manager"]
+        if verbose:
+            cmd.extend(["-o", "wide"])
+            
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        if verbose:
+            typer.echo(f"📋 Command executed: {' '.join(cmd)}")
+            
         typer.echo("Node Manager Pods:")
         typer.echo(result.stdout)
+        
+        if verbose:
+            # Get additional pod details
+            try:
+                describe_result = subprocess.run(
+                    ["kubectl", "describe", "pods", "-n", namespace, "-l", "app=node-manager"],
+                    capture_output=True, text=True, check=True
+                )
+                typer.echo("\n📋 Detailed Pod Information:")
+                typer.echo(describe_result.stdout)
+            except subprocess.CalledProcessError:
+                pass
+                
     except subprocess.CalledProcessError as e:
         typer.secho(f"❌ Failed to get pod status: {e.stderr}", fg=typer.colors.RED)
+        if verbose:
+            typer.echo(f"📋 Command that failed: {' '.join(cmd)}")
         raise typer.Exit(1)
     
     # Check service
@@ -169,6 +199,7 @@ def node_manager_logs(
     namespace: str = typer.Option("kitchen-system", "--namespace", "-n", help="Kubernetes namespace"),
     follow: bool = typer.Option(False, "--follow", "-f", help="Follow log output"),
     tail: int = typer.Option(100, "--tail", help="Number of recent lines to show"),
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable verbose output"),
 ) -> None:
     """View node manager logs."""
     typer.secho("📋 Viewing Node Manager logs...", fg=typer.colors.BLUE)
@@ -177,11 +208,16 @@ def node_manager_logs(
     if follow:
         cmd.append("-f")
     
+    if verbose:
+        typer.echo(f"📋 Command executed: {' '.join(cmd)}")
+    
     try:
         # Use subprocess.run with no capture_output so logs stream to terminal
         subprocess.run(cmd, check=True)
     except subprocess.CalledProcessError as e:
         typer.secho(f"❌ Failed to get logs: {e}", fg=typer.colors.RED)
+        if verbose:
+            typer.echo(f"📋 Command that failed: {' '.join(cmd)}")
         raise typer.Exit(1)
     except KeyboardInterrupt:
         typer.secho("\n👋 Log streaming stopped", fg=typer.colors.YELLOW)
@@ -191,6 +227,7 @@ def node_manager_logs(
 def api_access(
     namespace: str = typer.Option("kitchen-system", "--namespace", "-n", help="Kubernetes namespace"),
     port: int = typer.Option(8000, "--port", help="Local port for API access"),
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable verbose output"),
 ) -> None:
     """Set up port forwarding to access the Node Manager API."""
     typer.secho(f"🔗 Setting up API access on port {port}...", fg=typer.colors.BLUE)
@@ -207,10 +244,15 @@ def api_access(
     
     cmd = ["kubectl", "port-forward", "-n", namespace, "service/node-manager", f"{port}:8000"]
     
+    if verbose:
+        typer.echo(f"📋 Command executed: {' '.join(cmd)}")
+    
     try:
         subprocess.run(cmd, check=True)
     except subprocess.CalledProcessError as e:
         typer.secho(f"❌ Port forwarding failed: {e}", fg=typer.colors.RED)
+        if verbose:
+            typer.echo(f"📋 Command that failed: {' '.join(cmd)}")
         raise typer.Exit(1)
     except KeyboardInterrupt:
         typer.secho("\n👋 Port forwarding stopped", fg=typer.colors.YELLOW)
