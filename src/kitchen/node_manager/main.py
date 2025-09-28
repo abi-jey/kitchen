@@ -8,8 +8,18 @@ import signal
 import sys
 from typing import Optional
 
-import uvicorn
-from kitchen.node_manager.api import app
+try:
+    import uvicorn
+    from kitchen.node_manager.api import app
+except ImportError as e:
+    print(f"❌ Missing dependencies for node manager: {e}")
+    print("💡 To install node manager dependencies, run:")
+    print("   poetry install --with=node-manager")
+    print("   # OR")
+    print("   pip install fastapi uvicorn sqlmodel asyncpg alembic kubernetes")
+    print()
+    print("📚 For more information, see the node manager documentation.")
+    sys.exit(1)
 
 
 def setup_logging() -> None:
@@ -71,6 +81,18 @@ def main() -> None:
     """Main entry point."""
     setup_logging()
     
+    # Check if we have a database URL configured
+    database_url = os.getenv("DATABASE_URL")
+    if not database_url:
+        logging.warning("⚠️  DATABASE_URL environment variable not set")
+        logging.info("💡 To run the node manager, you need to provide a PostgreSQL database URL:")
+        logging.info("   export DATABASE_URL='postgresql+asyncpg://user:pass@host:5432/db'")
+        logging.info("   python -m kitchen.node_manager.main")
+        logging.info("")
+        logging.info("📚 Or use the CLI: kitchen node-manager deploy --database-url 'postgresql+asyncpg://...'")
+        logging.info("")
+        logging.info("🔧 Starting server anyway (will fail without valid database)...")
+    
     try:
         asyncio.run(run_server())
     except KeyboardInterrupt:
@@ -78,6 +100,9 @@ def main() -> None:
         sys.exit(0)
     except Exception as e:
         logging.error(f"Application failed: {e}")
+        if "Connect call failed" in str(e) and "5432" in str(e):
+            logging.error("💡 This error indicates PostgreSQL is not available or misconfigured.")
+            logging.error("   Please ensure your DATABASE_URL is correct and PostgreSQL is running.")
         sys.exit(1)
 
 
