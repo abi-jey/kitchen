@@ -18,6 +18,7 @@ def deploy_node_manager(
     image: str = typer.Option("ghcr.io/abi-jey/kitchen/node-manager:latest", "--image", help="Docker image to deploy"),
     tag: Optional[str] = typer.Option(None, "--tag", help="Docker image tag (overrides image tag)"),
     database_url: Optional[str] = typer.Option(None, "--database-url", help="PostgreSQL connection string"),
+    sentry_dsn: Optional[str] = typer.Option(None, "--sentry-dsn", help="Sentry DSN for error tracking (optional)"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Show what would be deployed without applying"),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable verbose output"),
 ) -> None:
@@ -81,6 +82,22 @@ def deploy_node_manager(
             f'DATABASE_URL: "{database_url}"'
         )
     
+    # Update Sentry DSN if provided
+    if sentry_dsn:
+        typer.echo("📝 Adding Sentry DSN configuration...")
+        # Find the secret stringData section and add SENTRY_DSN
+        # Replace the placeholder or add after DB_NAME
+        manifest_content = manifest_content.replace(
+            '  DB_NAME: "kitchen_node_manager"',
+            f'  DB_NAME: "kitchen_node_manager"\n  SENTRY_DSN: "{sentry_dsn}"'
+        )
+    
+    # Optionally, we could also inject a version label based on cli version
+    version = kitchen.__version__ if hasattr(kitchen, "__version__") else "unknown"
+    if "{{node_manager_version}}" in manifest_content:
+        manifest_content = manifest_content.replace("{{node_manager_version}}", version)
+        typer.echo(f"📝 Setting node manager version label: {version}")
+    
     # Write to temporary file for deployment
     with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as tmp_file:
         tmp_file.write(manifest_content)
@@ -123,8 +140,8 @@ def deploy_node_manager(
                 typer.echo(result.stdout)
         except subprocess.CalledProcessError as e:
             typer.secho(f"❌ Failed to deploy Node Manager: {e.stderr}", fg=typer.colors.RED)
-            if verbose and result.stdout:
-                typer.echo(f"📄 Additional output:\n{result.stdout}")
+            if verbose and e.stdout:
+                typer.echo(f"📄 Additional output:\n{e.stdout}")
             raise typer.Exit(1)
         
         if not dry_run:
@@ -148,11 +165,11 @@ def node_manager_status(
     typer.secho("📊 Checking Node Manager status...", fg=typer.colors.BLUE)
     
     # Check pods
+    cmd = ["kubectl", "get", "pods", "-n", namespace, "-l", "app=node-manager"]
+    if verbose:
+        cmd.extend(["-o", "wide"])
+    
     try:
-        cmd = ["kubectl", "get", "pods", "-n", namespace, "-l", "app=node-manager"]
-        if verbose:
-            cmd.extend(["-o", "wide"])
-            
         result = subprocess.run(cmd, capture_output=True, text=True, check=True)
         if verbose:
             typer.echo(f"📋 Command executed: {' '.join(cmd)}")

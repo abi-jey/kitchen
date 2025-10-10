@@ -3,14 +3,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Dict, Any, List, Optional
 
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from kitchen.node_manager.database import AsyncSessionLocal
-from kitchen.node_manager.k8s_client import KubernetesNodeClient
+from kitchen.node_manager.k8s_client import K8sClient
 from kitchen.node_manager.connectivity import DirectConnectivityChecker
 from kitchen.node_manager.models import NodeSnapshot, NodeConnectivity
 
@@ -38,7 +38,7 @@ class NodeMonitorWorker:
         self.monitoring_interval = monitoring_interval
         self.connectivity_interval = connectivity_interval
         
-        self.k8s_client = KubernetesNodeClient()
+        self.k8s_client = K8sClient()
         self.connectivity_checker = DirectConnectivityChecker(
             ping_count=ping_count,
             timeout_seconds=ping_timeout
@@ -61,7 +61,7 @@ class NodeMonitorWorker:
         
         # Start monitoring tasks
         self._monitoring_task = asyncio.create_task(self._monitoring_loop())
-        self._connectivity_task = asyncio.create_task(self._connectivity_loop())
+        self._connectivity_task = asyncio.create_task(self._connectivity_loop(self.connectivity_interval))
         
         logger.info("Node monitor worker started successfully")
     
@@ -105,23 +105,19 @@ class NodeMonitorWorker:
                 await asyncio.sleep(self.monitoring_interval)
         
         logger.info("Node monitoring loop stopped")
-    
-    async def _connectivity_loop(self) -> None:
+
+    async def _connectivity_loop(self, delay: float) -> None:
         """Main loop for connectivity monitoring."""
         logger.info("Starting connectivity monitoring loop")
         
         # Wait a bit before starting connectivity checks to let node monitoring initialize
-        await asyncio.sleep(10)
-        
+
         while self._running:
             try:
                 await self._check_node_connectivity()
             except Exception as e:
                 logger.error(f"Error in connectivity loop: {e}", exc_info=True)
-            
-            # Wait for next interval
-            if self._running:
-                await asyncio.sleep(self.connectivity_interval)
+            await asyncio.sleep(delay)
         
         logger.info("Connectivity monitoring loop stopped")
     
@@ -136,7 +132,7 @@ class NodeMonitorWorker:
                 return
             
             async with AsyncSessionLocal() as session:
-                current_time = datetime.utcnow()
+                current_time = datetime.now(timezone.utc)
                 processed_nodes = set()
                 
                 for node_data in nodes:
@@ -285,11 +281,11 @@ class NodeMonitorWorker:
     async def get_health_status(self) -> Dict[str, Any]:
         """Get worker health and status information."""
         return {
-            "running": self._running,
+            "worker_running": self._running,
             "monitoring_task_running": self._monitoring_task and not self._monitoring_task.done() if self._monitoring_task else False,
             "connectivity_task_running": self._connectivity_task and not self._connectivity_task.done() if self._connectivity_task else False,
-            "kubernetes_healthy": self.k8s_client.is_healthy(),
-            "tailscale_available": self.connectivity_checker.is_ping_available(),
+            "kubernetes_healthy": await self.k8s_client.is_healthy(),
+            "ping_available": self.connectivity_checker.is_ping_available(),
             "monitoring_interval": self.monitoring_interval,
             "connectivity_interval": self.connectivity_interval,
         }

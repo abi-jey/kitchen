@@ -113,6 +113,7 @@ metadata:
   namespace: kitchen-system
   labels:
     app: node-manager
+    version: {{node_manager_version}}
 spec:
   replicas: 2
   selector:
@@ -122,6 +123,7 @@ spec:
     metadata:
       labels:
         app: node-manager
+        version: {{node_manager_version}}
     spec:
       serviceAccountName: node-manager
       

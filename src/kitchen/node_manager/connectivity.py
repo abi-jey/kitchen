@@ -5,7 +5,7 @@ import asyncio
 import logging
 import re
 from typing import Optional, Dict, Any
-from datetime import datetime
+from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +41,7 @@ class DirectConnectivityChecker:
         """
         logger.debug(f"Pinging {target_ip} ({node_name}) with {self.ping_count} packets")
         
-        start_time = datetime.utcnow()
+        start_time = datetime.now(timezone.utc)
         
         try:
             # Build direct ping command
@@ -235,7 +235,7 @@ class DirectConnectivityChecker:
                         "packet_loss": 100.0,
                         "error_message": str(result),
                         "error_code": -1,
-                        "measured_at": datetime.utcnow(),
+                        "measured_at": datetime.now(timezone.utc),
                     }
                 else:
                     ping_results[node_name] = result
@@ -252,7 +252,7 @@ class DirectConnectivityChecker:
                 "packet_loss": 100.0,
                 "error_message": str(e),
                 "error_code": -1,
-                "measured_at": datetime.utcnow(),
+                "measured_at": datetime.now(timezone.utc),
             }
             return {name: error_result for name in node_names}
     

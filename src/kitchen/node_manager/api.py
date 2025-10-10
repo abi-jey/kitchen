@@ -2,12 +2,14 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta
-from typing import List, Dict, Any, Optional
+from datetime import datetime, timedelta, timezone
+import os
+from typing import List, Any, Optional, cast
 
 from fastapi import FastAPI, HTTPException, Depends, Query
-from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from contextlib import asynccontextmanager
+from pydantic import BaseModel
+import sentry_sdk
 from sqlalchemy import select, func, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -85,55 +87,62 @@ class NodeStats(BaseModel):
     average_latency_ms: Optional[float] = None
 
 
-# Global worker instance
-worker: Optional[NodeMonitorWorker] = None
+worker: Optional[NodeMonitorWorker] = None  # Global reference for handlers
 
-# Create FastAPI app
+if os.environ.get("SENTRY_DSN"):
+    sentry_sdk.init(
+        dsn=os.environ["SENTRY_DSN"],
+        send_default_pii=True,
+        enable_logs=True,
+        traces_sample_rate=1.0,
+    )
+    logger.info("Sentry SDK initialized")
+else:
+    logger.info("SENTRY_DSN not set, Sentry SDK not initialized")    
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):  # type: ignore[override]
+    """FastAPI lifespan context managing startup and shutdown.
+
+    Replaces deprecated @app.on_event usage.
+    """
+    global worker
+    logger.info("Starting Kitchen Node Manager")
+    try:
+        await init_db()
+        logger.info("Database initialized")
+        worker = NodeMonitorWorker(
+            monitoring_interval=60,  # seconds
+            connectivity_interval=300,  # seconds
+        )
+        await worker.start()
+        logger.info("Worker started")
+        yield
+    except Exception as e:
+        logger.error(f"Failed during startup: {e}")
+        # Ensure we propagate error so server fails fast
+        raise
+    finally:
+        logger.info("Shutting down Kitchen Node Manager")
+        if worker:
+            try:
+                await worker.stop()
+                logger.info("Worker stopped")
+            except Exception as e:  # pragma: no cover - defensive
+                logger.error(f"Error stopping worker: {e}")
+        try:
+            await close_db()
+            logger.info("Database connections closed")
+        except Exception as e:  # pragma: no cover - defensive
+            logger.error(f"Error closing database: {e}")
+
+
 app = FastAPI(
     title="Kitchen Node Manager",
     description="Kubernetes node monitoring and connectivity tracking service",
     version="1.0.0",
+    lifespan=lifespan,
 )
-
-
-@app.on_event("startup")
-async def startup_event():
-    """Initialize database and start worker on startup."""
-    global worker
-    
-    logger.info("Starting Kitchen Node Manager")
-    
-    try:
-        # Initialize database
-        await init_db()
-        logger.info("Database initialized")
-        
-        # Start worker
-        worker = NodeMonitorWorker(
-            monitoring_interval=60,  # Check nodes every minute
-            connectivity_interval=300,  # Ping nodes every 5 minutes
-        )
-        await worker.start()
-        logger.info("Worker started")
-        
-    except Exception as e:
-        logger.error(f"Failed to start application: {e}")
-        raise
-
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    """Clean up on shutdown."""
-    global worker
-    
-    logger.info("Shutting down Kitchen Node Manager")
-    
-    if worker:
-        await worker.stop()
-        logger.info("Worker stopped")
-    
-    await close_db()
-    logger.info("Database connections closed")
 
 
 @app.get("/health", response_model=HealthStatus)
@@ -147,13 +156,13 @@ async def get_health(db: AsyncSession = Depends(get_db_session)) -> HealthStatus
         
         try:
             # Simple query to test database
-            result = await db.execute(select(func.count(NodeSnapshot.id)))
+            result = await db.execute(select(func.count(cast(Any, NodeSnapshot.id))))  # type: ignore[arg-type]
             node_count = result.scalar() or 0
             
             # Get last monitoring time
             result = await db.execute(
-                select(NodeSnapshot.last_seen_at)
-                .order_by(desc(NodeSnapshot.last_seen_at))
+                select(cast(Any, NodeSnapshot.last_seen_at))  # type: ignore[arg-type]
+                .order_by(desc(cast(Any, NodeSnapshot.last_seen_at)))  # type: ignore[arg-type]
                 .limit(1)
             )
             last_monitoring = result.scalar()
@@ -198,13 +207,13 @@ async def list_nodes(
         
         # Apply filters
         if ready is not None:
-            stmt = stmt.where(NodeSnapshot.ready == ready)
+            stmt = stmt.where(cast(Any, NodeSnapshot.ready) == ready)  # type: ignore[arg-type]
         
         if available is not None:
             if available:
-                stmt = stmt.where(NodeSnapshot.unavailable_since.is_(None))
+                stmt = stmt.where(cast(Any, NodeSnapshot.unavailable_since).is_(None))  # type: ignore[arg-type]
             else:
-                stmt = stmt.where(NodeSnapshot.unavailable_since.is_not(None))
+                stmt = stmt.where(cast(Any, NodeSnapshot.unavailable_since).is_not(None))  # type: ignore[arg-type]
         
         stmt = stmt.order_by(NodeSnapshot.name)
         
@@ -236,7 +245,7 @@ async def list_nodes(
 async def get_node(node_name: str, db: AsyncSession = Depends(get_db_session)) -> NodeDetail:
     """Get detailed information about a specific node."""
     try:
-        stmt = select(NodeSnapshot).where(NodeSnapshot.name == node_name)
+        stmt = select(NodeSnapshot).where(cast(Any, NodeSnapshot.name) == node_name)  # type: ignore[arg-type]
         result = await db.execute(stmt)
         node = result.scalar_one_or_none()
         
@@ -281,20 +290,20 @@ async def get_node_connectivity(
     """Get connectivity history for a specific node."""
     try:
         # Check if node exists
-        node_stmt = select(NodeSnapshot).where(NodeSnapshot.name == node_name)
+        node_stmt = select(NodeSnapshot).where(cast(Any, NodeSnapshot.name) == node_name)  # type: ignore[arg-type]
         node_result = await db.execute(node_stmt)
         if not node_result.scalar_one_or_none():
             raise HTTPException(status_code=404, detail=f"Node {node_name} not found")
         
         # Get connectivity records
-        since = datetime.utcnow() - timedelta(hours=hours)
+        since = datetime.now(timezone.utc) - timedelta(hours=hours)
         stmt = (
             select(NodeConnectivity)
             .where(
-                NodeConnectivity.node_name == node_name,
-                NodeConnectivity.measured_at >= since
+                cast(Any, NodeConnectivity.node_name) == node_name,  # type: ignore[arg-type]
+                cast(Any, NodeConnectivity.measured_at) >= since  # type: ignore[arg-type]
             )
-            .order_by(desc(NodeConnectivity.measured_at))
+            .order_by(desc(cast(Any, NodeConnectivity.measured_at)))  # type: ignore[arg-type]
         )
         
         result = await db.execute(stmt)
@@ -326,32 +335,32 @@ async def get_stats(db: AsyncSession = Depends(get_db_session)) -> NodeStats:
     """Get statistics about all nodes."""
     try:
         # Get node counts
-        total_result = await db.execute(select(func.count(NodeSnapshot.id)))
+        total_result = await db.execute(select(func.count(cast(Any, NodeSnapshot.id))))  # type: ignore[arg-type]
         total_nodes = total_result.scalar() or 0
         
         ready_result = await db.execute(
-            select(func.count(NodeSnapshot.id)).where(NodeSnapshot.ready == True)
+            select(func.count(cast(Any, NodeSnapshot.id))).where(cast(Any, NodeSnapshot.ready) == True)  # type: ignore[arg-type]
         )
         ready_nodes = ready_result.scalar() or 0
         
         unavailable_result = await db.execute(
-            select(func.count(NodeSnapshot.id)).where(NodeSnapshot.unavailable_since.is_not(None))
+            select(func.count(cast(Any, NodeSnapshot.id))).where(cast(Any, NodeSnapshot.unavailable_since).is_not(None))  # type: ignore[arg-type]
         )
         unavailable_nodes = unavailable_result.scalar() or 0
         
         tailscale_result = await db.execute(
-            select(func.count(NodeSnapshot.id)).where(NodeSnapshot.tailscale_ip.is_not(None))
+            select(func.count(cast(Any, NodeSnapshot.id))).where(cast(Any, NodeSnapshot.tailscale_ip).is_not(None))  # type: ignore[arg-type]
         )
         nodes_with_tailscale = tailscale_result.scalar() or 0
         
         # Get average latency from recent connectivity checks (last 24 hours)
-        since = datetime.utcnow() - timedelta(hours=24)
+        since = datetime.now(timezone.utc) - timedelta(hours=24)
         latency_result = await db.execute(
-            select(func.avg(NodeConnectivity.latency_ms))
+            select(func.avg(cast(Any, NodeConnectivity.latency_ms)))  # type: ignore[arg-type]
             .where(
-                NodeConnectivity.measured_at >= since,
-                NodeConnectivity.success == True,
-                NodeConnectivity.latency_ms.is_not(None)
+                cast(Any, NodeConnectivity.measured_at) >= since,  # type: ignore[arg-type]
+                cast(Any, NodeConnectivity.success) == True,  # type: ignore[arg-type]
+                cast(Any, NodeConnectivity.latency_ms).is_not(None)  # type: ignore[arg-type]
             )
         )
         avg_latency = latency_result.scalar()

@@ -2,17 +2,17 @@
 from __future__ import annotations
 
 import asyncio
+from asyncio.log import logger
 import logging
 import os
 import signal
 import sys
-from typing import Optional
-
+from traceback import print_exc
 try:
     import uvicorn
     from kitchen.node_manager.api import app
 except ImportError as e:
-    print(f"❌ Missing dependencies for node manager: {e}")
+    print(f"❌ Missing dependencies for node manager: {e}, {print_exc()}")
     print("💡 To install node manager dependencies, run:")
     print("   poetry install --with=node-manager")
     print("   # OR")
@@ -43,7 +43,7 @@ async def run_server() -> None:
     """Run the FastAPI server with proper lifecycle management."""
     host = os.getenv("HOST", "0.0.0.0")
     port = int(os.getenv("PORT", "8000"))
-    
+    logger.info(f"Configuring server to run on {host}:{port}")
     config = uvicorn.Config(
         app,
         host=host,
