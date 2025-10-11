@@ -1,0 +1,1 @@
+"""Kubernetes manifests for node manager deployment."""

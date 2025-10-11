@@ -79,6 +79,21 @@ Kitchen integrates with [Tailscale](https://tailscale.com) for secure, mesh netw
 - `--password` - Password authentication (interactive)
 - `--localhost` - Add current machine (no SSH needed)
 
+### Node Manager
+```bash
+# Deploy node manager to Kubernetes
+kitchen node-manager deploy
+
+# Check node manager status
+kitchen node-manager status
+
+# View node manager logs
+kitchen node-manager logs --follow
+
+# Access node manager API
+kitchen node-manager api --port 8000
+```
+
 ### Utility Commands
 ```bash
 # Run any command
@@ -122,6 +137,7 @@ poetry run kitchen --help
 
 - ✅ Node addition with automated setup
 - ✅ Cluster status monitoring  
+- ✅ Node manager with FastAPI and connectivity tracking
 - 🚧 Cluster creation from scratch
 - 🚧 Node removal and cleanup
 - 🚧 Cluster backup and restore

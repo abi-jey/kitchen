@@ -189,3 +189,5 @@ logs/
 *.pem
 *.key
 id_rsa*
+
+.vite

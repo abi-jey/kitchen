@@ -1,0 +1,297 @@
+---
+# Namespace
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kitchen-system
+  labels:
+    name: kitchen-system
+
+---
+# ConfigMap for node manager configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: node-manager-config
+  namespace: kitchen-system
+data:
+  # Application configuration
+  HOST: "0.0.0.0"
+  PORT: "8000"
+  LOG_LEVEL: "INFO"
+  UVICORN_LOG_LEVEL: "info"
+  
+  # Monitoring intervals
+  MONITORING_INTERVAL: "60"      # seconds
+  CONNECTIVITY_INTERVAL: "300"   # seconds
+  PING_COUNT: "4"
+  PING_TIMEOUT: "5"
+  
+  # Database configuration (will be overridden by secret)
+  DATABASE_URL: "postgresql+asyncpg://postgres:postgres@postgres:5432/kitchen_node_manager"
+
+---
+# Secret for database credentials and sensitive config
+apiVersion: v1
+kind: Secret
+metadata:
+  name: node-manager-secrets
+  namespace: kitchen-system
+type: Opaque
+stringData:
+  # Database credentials - update these with your actual values
+  DATABASE_URL: "postgresql+asyncpg://kitchen_user:kitchen_password@postgres:5432/kitchen_node_manager"
+  DB_USERNAME: "kitchen_user"
+  DB_PASSWORD: "kitchen_password"
+  DB_HOST: "postgres"
+  DB_PORT: "5432"
+  DB_NAME: "kitchen_node_manager"
+
+---
+# ServiceAccount for node manager
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: node-manager
+  namespace: kitchen-system
+automountServiceAccountToken: true
+
+---
+# ClusterRole for reading nodes
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: node-manager-reader
+rules:
+- apiGroups: [""]
+  resources: ["nodes"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: [""]
+  resources: ["namespaces"]
+  verbs: ["get", "list"]
+
+---
+# ClusterRoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: node-manager-reader-binding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: node-manager-reader
+subjects:
+- kind: ServiceAccount
+  name: node-manager
+  namespace: kitchen-system
+
+---
+# Service for node manager
+apiVersion: v1
+kind: Service
+metadata:
+  name: node-manager
+  namespace: kitchen-system
+  labels:
+    app: node-manager
+spec:
+  type: ClusterIP
+  ports:
+  - port: 8000
+    targetPort: 8000
+    protocol: TCP
+    name: http
+  selector:
+    app: node-manager
+
+---
+# Deployment for node manager
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: node-manager
+  namespace: kitchen-system
+  labels:
+    app: node-manager
+    version: {{node_manager_version}}
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: node-manager
+  template:
+    metadata:
+      labels:
+        app: node-manager
+        version: {{node_manager_version}}
+    spec:
+      serviceAccountName: node-manager
+      
+      # Tolerate any taints (runs on any node)
+      tolerations:
+      - operator: "Exists"
+        effect: "NoSchedule"
+      - operator: "Exists"
+        effect: "NoExecute"
+      - operator: "Exists"
+        effect: "PreferNoSchedule"
+      
+      # Anti-affinity to spread across nodes
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                - key: app
+                  operator: In
+                  values:
+                  - node-manager
+              topologyKey: kubernetes.io/hostname
+      
+      containers:
+      - name: node-manager
+        image: ghcr.io/abi-jey/kitchen/node-manager:latest
+        imagePullPolicy: Always
+        
+        # Security context for container - add CAP_NET_RAW for ping
+        securityContext:
+          capabilities:
+            add:
+            - CAP_NET_RAW
+          runAsUser: 0
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: false
+        
+        ports:
+        - containerPort: 8000
+          name: http
+        
+        envFrom:
+        - configMapRef:
+            name: node-manager-config
+        - secretRef:
+            name: node-manager-secrets
+        env:
+        - name: KUBERNETES_SERVICE_HOST
+          value: kubernetes.default.svc
+        - name: KUBERNETES_SERVICE_PORT
+          value: "443"
+        
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "100m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+        
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 30
+          periodSeconds: 30
+          timeoutSeconds: 10
+          failureThreshold: 3
+        
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        
+        startupProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 5
+          failureThreshold: 12  # 60 seconds total
+      
+      restartPolicy: Always
+      
+      # Security context - removed runAsNonRoot to allow CAP_NET_RAW
+      securityContext:
+        fsGroup: 1000
+
+---
+# HorizontalPodAutoscaler
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: node-manager-hpa
+  namespace: kitchen-system
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: node-manager
+  minReplicas: 1
+  maxReplicas: 5
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 60
+      policies:
+      - type: Percent
+        value: 100
+        periodSeconds: 15
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+      - type: Percent
+        value: 10
+        periodSeconds: 60
+
+---
+# PodDisruptionBudget - ensure at least 1 pod is always available
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: node-manager-pdb
+  namespace: kitchen-system
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: node-manager
+
+---
+# NetworkPolicy (optional) - allows ingress on port 8000
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: node-manager-netpol
+  namespace: kitchen-system
+spec:
+  podSelector:
+    matchLabels:
+      app: node-manager
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  - from: []  # Allow all ingress on port 8000
+    ports:
+    - protocol: TCP
+      port: 8000
+  egress:
+  - {}  # Allow all egress (needed for K8s API, DB, Tailscale)

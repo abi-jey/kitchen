@@ -7,11 +7,15 @@ import sys
 from kitchen.k8s.main import k8s_app
 from kitchen.k8s.worker import WorkerNode
 from kitchen.ssh import SSHSession
+from kitchen.node_manager.cli import node_manager_app
 
 app = typer.Typer(help="Kitchen - Your Kubernetes cookbook for cluster management")
 
 # Add the K8s sub-commands
 app.add_typer(k8s_app, name="k8s")
+
+# Add the Node Manager sub-commands
+app.add_typer(node_manager_app, name="node-manager")
 
 
 @app.callback()
