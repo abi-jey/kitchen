@@ -14,15 +14,59 @@ poetry install
 
 ## Quick Start
 
-Check if you have the required tools:
+### 1. Check Your Setup
 ```bash
 kitchen setup
 ```
 
-View available recipes:
+This checks for required tools and shows your Tailscale status.
+
+### 2. Configure Your Cluster
+
+First, set up your master node configuration:
+```bash
+# Initialize master node config
+kitchen k8s config init --hostname master-01 \
+  --ip 192.168.1.10 \
+  --ip 100.64.1.5 \
+  --version 1.29 \
+  --cluster production
+
+# Save cluster secrets (you'll be prompted for values)
+kitchen k8s config set-secrets --cluster production
+
+# Verify configuration
+kitchen k8s config show
+```
+
+### 3. Add Worker Nodes
+
+**Step 1: Check the node**
+```bash
+kitchen k8s node check --role worker --host user@192.168.1.100 --verbose
+```
+
+**Step 2: Prepare the node**
+```bash
+kitchen k8s node prepare --role worker --host user@192.168.1.100
+```
+
+This installs:
+- Tailscale (if configured in secrets)
+- CRI-O container runtime
+- Kubernetes components (kubelet, kubeadm, kubectl)
+
+**Step 3: Join the node to your cluster**
+```bash
+kitchen k8s node join --host user@192.168.1.100 --cluster production --verbose
+```
+
+### 4. View Available Commands
 ```bash
 kitchen cookbook
 ```
+
+This shows common recipes and usage examples.
 
 ## Core Features
 
@@ -137,14 +181,46 @@ Run `kitchen setup` to check your installation and see Tailscale status.
 
 ## Development
 
-Install dependencies:
+### Setup Development Environment
+
 ```bash
+# Install dependencies
 poetry install
+
+# Run CLI in development
+poetry run kitchen --help
+
+# Run with verbose output
+poetry run kitchen --verbose k8s config show
 ```
 
-Run the CLI in development:
+### Project Structure
+
+```
+src/kitchen/
+├── main.py              # Main CLI entry point
+├── ssh.py               # SSH session management
+├── config/              # Configuration management
+├── k8s/                 # Kubernetes operations
+│   ├── main.py         # K8s CLI commands
+│   ├── handlers/       # Component handlers (Tailscale, CRI-O, etc.)
+│   ├── nodes/          # Pre-flight checks
+│   ├── master.py       # Master node operations
+│   └── worker.py       # Worker node operations
+└── node_manager/       # Node monitoring service
+    ├── api/            # FastAPI endpoints
+    ├── cli.py          # Node manager CLI
+    └── manifests/      # Kubernetes manifests
+```
+
+### Running Tests
+
 ```bash
-poetry run kitchen --help
+# Run all tests
+poetry run pytest
+
+# Run with coverage
+poetry run pytest --cov=kitchen
 ```
 
 ## Roadmap
@@ -161,8 +237,47 @@ poetry run kitchen --help
 - 🚧 Node removal and cleanup
 - 🚧 Cluster backup and restore
 
+## Troubleshooting
+
+### Common Issues
+
+**SSH Connection Issues**
+- Ensure SSH key permissions are correct: `chmod 600 ~/.ssh/id_rsa`
+- Test SSH connection manually: `ssh user@host`
+- Use `--verbose` flag for detailed connection logs
+
+**Node Join Failures**
+- Verify master config is set: `kitchen k8s config show`
+- Check cluster secrets are saved: `kitchen k8s config show-secrets`
+- Ensure all phases are prepared: `kitchen k8s node check --role worker --host user@node`
+- Review join logs with `--verbose` flag
+
+**Tailscale Issues**
+- Verify Tailscale is running: `tailscale status`
+- Check auth key is set in secrets: `kitchen k8s config show-secrets`
+- Manually test Tailscale connectivity: `ping 100.64.x.x`
+
+**Container Runtime Issues**
+- Check CRI-O status: `systemctl status crio`
+- View CRI-O logs: `journalctl -u crio -f`
+- Verify container runtime socket: `crictl info`
+
+### Getting Help
+
+- Run any command with `--help` for detailed usage
+- Use `--verbose` flag for debugging
+- Check the cookbook: `kitchen cookbook`
+- Review command history in `.github/history/` for development context
+
 ## Contributing
 
 Kitchen is designed to be your personal Kubernetes cookbook. Feel free to extend it with your own recipes and automation!
+
+**Development Guidelines:**
+- Follow existing code structure and patterns
+- Add type hints to all functions
+- Keep line length to 120 characters (use `# fmt: skip` for long strings)
+- Use named constants instead of magic numbers
+- Write comprehensive error messages with actionable suggestions
 
 

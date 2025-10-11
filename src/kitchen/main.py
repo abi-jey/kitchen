@@ -61,10 +61,14 @@ def run(
 def setup() -> None:
     """Check and install required tools for Kubernetes management."""
     typer.echo("🔧 Checking Kitchen setup...")
+    typer.echo("(Checks for tools needed on your local machine)")
+    typer.echo()
     
-    required_tools = ["kubectl", "kubeadm", "docker"]
+    required_tools = ["kubectl", "kubeadm"]
+    optional_tools = ["docker"]  # For local dev/building images
     recommended_tools = ["tailscale", "ssh", "sshpass"]
     missing_tools = []
+    missing_optional = []
     missing_recommended = []
     
     # Check required tools
@@ -83,6 +87,23 @@ def setup() -> None:
         except Exception:
             missing_tools.append(tool)
             typer.echo(f"❌ {tool} is not installed")
+    
+    # Check optional tools
+    for tool in optional_tools:
+        try:
+            result = subprocess.run(
+                ["which", tool], 
+                capture_output=True, 
+                text=True
+            )
+            if result.returncode == 0:
+                typer.echo(f"✅ {tool} is installed (optional, for local dev)")
+            else:
+                missing_optional.append(tool)
+                typer.echo(f"ℹ️  {tool} is not installed (optional, for local dev)")
+        except Exception:
+            missing_optional.append(tool)
+            typer.echo(f"ℹ️  {tool} is not installed (optional, for local dev)")
     
     # Check recommended tools
     for tool in recommended_tools:
@@ -108,7 +129,11 @@ def setup() -> None:
         typer.echo("\nInstallation guides:")
         typer.echo("- kubectl: https://kubernetes.io/docs/tasks/tools/install-kubectl/")
         typer.echo("- kubeadm: https://kubernetes.io/docs/setup/production-environment/tools/kubeadm/install-kubeadm/")  # fmt: skip
-        typer.echo("- docker: https://docs.docker.com/engine/install/")
+    
+    if missing_optional:
+        typer.echo(f"\nℹ️  Optional tools not found: {', '.join(missing_optional)}")
+        typer.echo("(These are only needed for local development)")
+        typer.echo("- docker: https://docs.docker.com/engine/install/ (for building node-manager images)")
     
     if missing_recommended:
         typer.echo(f"\n⚠️  Missing recommended tools: {', '.join(missing_recommended)}")
@@ -117,13 +142,16 @@ def setup() -> None:
         typer.echo("- ssh: Usually pre-installed, check your package manager")
         typer.echo("- sshpass: For password automation (apt install sshpass / brew install sshpass)")
     
-    if not missing_tools and not missing_recommended:
+    if not missing_tools and not missing_recommended and not missing_optional:
         typer.echo("\n🎉 All tools are installed!")
         typer.echo("Kitchen is ready for Kubernetes management.")
     elif not missing_tools:
         typer.echo("\n✅ All required tools are installed!")
-        typer.echo("Kitchen is ready for basic Kubernetes management.")
-        typer.echo("Install recommended tools for full functionality.")
+        typer.echo("Kitchen is ready for Kubernetes management.")
+        if missing_recommended:
+            typer.echo("Install recommended tools for enhanced functionality.")
+        if missing_optional:
+            typer.echo("Optional tools are only needed for development work.")
     
     # Show Tailscale status if available
     try:
@@ -142,6 +170,11 @@ def setup() -> None:
             typer.echo("Run 'tailscale up' to connect to your Tailnet")
     except Exception:
         pass  # Tailscale not available, already reported above
+    
+    # Important note about remote node setup
+    typer.echo("\n💡 Note: Kitchen automatically installs CRI-O and Kubernetes components")
+    typer.echo("   on remote nodes during 'kitchen k8s node prepare'. You don't need to")
+    typer.echo("   pre-install these on worker nodes.")
 
 
 @app.command()
