@@ -160,6 +160,7 @@ spec:
           capabilities:
             add:
             - CAP_NET_RAW
+          runAsUser: 0
           allowPrivilegeEscalation: false
           readOnlyRootFilesystem: false
         
@@ -215,11 +216,8 @@ spec:
       
       restartPolicy: Always
       
-      # Security context
+      # Security context - removed runAsNonRoot to allow CAP_NET_RAW
       securityContext:
-        runAsNonRoot: true
-        runAsUser: 1000
-        runAsGroup: 1000
         fsGroup: 1000
 
 ---
