@@ -95,6 +95,9 @@ if os.environ.get("SENTRY_DSN"):
         send_default_pii=True,
         enable_logs=True,
         traces_sample_rate=1.0,
+        enable_tracing=True,
+        enable_db_query_source=True,
+        server_name="node-manager",
     )
     logger.info("Sentry SDK initialized")
 else:

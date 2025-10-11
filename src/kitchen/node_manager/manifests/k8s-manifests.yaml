@@ -155,6 +155,14 @@ spec:
         image: ghcr.io/abi-jey/kitchen/node-manager:latest
         imagePullPolicy: Always
         
+        # Security context for container - add CAP_NET_RAW for ping
+        securityContext:
+          capabilities:
+            add:
+            - CAP_NET_RAW
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: false
+        
         ports:
         - containerPort: 8000
           name: http
@@ -172,7 +180,7 @@ spec:
         
         resources:
           requests:
-            memory: "128Mi"
+            memory: "256Mi"
             cpu: "100m"
           limits:
             memory: "512Mi"
