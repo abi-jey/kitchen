@@ -26,6 +26,13 @@ RUN pip install --no-cache-dir --upgrade pip \
 
 COPY src ./
 
+# Copy pre-built UI assets from the repository build output into the image.
+# The Docker build context must contain "dist/kitchen-ui" (run `npm run build`
+# at repo root before building the image). This COPY will fail if the path is
+# not present in the build context, which is intentional to avoid shipping an
+# image with missing UI assets.
+COPY dist/kitchen-ui /app/dist/kitchen-ui
+
 RUN mkdir -p /app/logs
 
 # Conditionally create a named non-root user (only if prod & not root)

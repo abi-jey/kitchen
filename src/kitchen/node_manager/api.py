@@ -4,6 +4,8 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timedelta, timezone
 import os
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from typing import List, Any, Optional, cast
 
 from fastapi import FastAPI, HTTPException, Depends, Query
@@ -146,6 +148,35 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
 )
+
+# Serve static UI assets from `dist/kitchen-ui` within the repo/cwd
+UI_PATH = os.path.join(os.getcwd(), 'dist', 'kitchen-ui')
+if os.path.isdir(UI_PATH):
+    try:
+        # html=True ensures index.html will be used for SPA routing when
+        # requesting the mount root (e.g. GET /ui)
+        app.mount('/ui', StaticFiles(directory=UI_PATH, html=True), name='ui')
+        logger.info(f"Mounted UI static files at /ui from {UI_PATH}")
+    except Exception as e:  # pragma: no cover - optional behavior
+        logger.warning(f"Failed to mount UI static files: {e}")
+else:
+    logger.info(
+        "No UI static assets found at runtime. Build the UI and copy "
+        "dist/kitchen-ui into /app/dist/kitchen-ui if you want to deploy the "
+        "UI with the image"
+    )
+
+
+@app.get('/ui', include_in_schema=False)
+async def serve_ui_index() -> FileResponse:  # pragma: no cover - optional
+    """Serve the UI entrypoint if available at runtime.
+
+    This makes it convenient to navigate to /ui in a browser.
+    """
+    index_path = os.path.join(UI_PATH, 'index.html')
+    if os.path.isfile(index_path):
+        return FileResponse(index_path)
+    raise HTTPException(status_code=404, detail='UI not available')
 
 
 @app.get("/health", response_model=HealthStatus)

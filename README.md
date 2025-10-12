@@ -127,6 +127,15 @@ Install dependencies:
 ```bash
 poetry install
 ```
+UI
+--
+Build the Vite UI from the repository root with:
+
+  npm install
+  npm run build
+
+Then build the node-manager image; the Docker build expects `dist/kitchen-ui` to
+exist and will copy it into the image so the UI can be served from /ui.
 
 Run the CLI in development:
 ```bash
