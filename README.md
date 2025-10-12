@@ -193,6 +193,15 @@ poetry run kitchen --help
 # Run with verbose output
 poetry run kitchen --verbose k8s config show
 ```
+UI
+--
+Build the Vite UI from the repository root with:
+
+  npm install
+  npm run build
+
+Then build the node-manager image; the Docker build expects `dist/kitchen-ui` to
+exist and will copy it into the image so the UI can be served from /ui.
 
 ### Project Structure
 
