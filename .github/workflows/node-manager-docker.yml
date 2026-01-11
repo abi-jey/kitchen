@@ -2,9 +2,9 @@ name: Build and Push Node Manager Docker Image
 
 on:
   push:
-    branches: [ main, dev, 'feature/**' ]
+    branches: [ main, dev, 'feature/**', 'develop/**' ]
   pull_request:
-    branches: [ main ]
+    branches: [ main, dev ]
 
 env:
   REGISTRY: ghcr.io
@@ -49,7 +49,7 @@ jobs:
           type=ref,event=pr
           type=sha,prefix={{branch}}-
           type=raw,value=latest,enable={{is_default_branch}}
-          type=raw,value=dev,enable=${{ github.ref == 'refs/heads/dev' }}
+          type=raw,value=latest-dev,enable=${{ github.ref == 'refs/heads/dev' }}
 
     - name: Build and push Docker image
       uses: docker/build-push-action@v5
