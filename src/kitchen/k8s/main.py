@@ -24,6 +24,59 @@ from kitchen.k8s.handlers.kube_apiserver_cert import KubeAPIServerCertHandler
 
 logger = getLogger(__name__)
 
+import re
+
+
+def _fetch_fresh_join_credentials(
+    master_user: str,
+    master_host: str,
+    ssh_key_path: str | None,
+    verbose: bool,
+) -> Tuple[str | None, str | None, str | None]:
+    """SSH to master node and generate fresh kubeadm join credentials.
+
+    Returns:
+        Tuple of (token, ca_cert_hash, error_message).
+        On success: (token, hash, None)
+        On failure: (None, None, error_message)
+    """
+    typer.secho(f"🔑 Fetching fresh join credentials from master {master_host}...", fg=typer.colors.CYAN)
+
+    try:
+        with SSHSession(master_user, master_host, ssh_key_path, verbose) as master_ssh:
+            # Create a new token and get the full join command
+            stdout, stderr, code = master_ssh.run(
+                "kubeadm token create --print-join-command",
+                use_sudo=True,
+                timeout=30.0,
+            )
+            if code != 0:
+                return None, None, f"Failed to create token on master: {stderr or stdout}"
+
+            # Parse the join command output
+            # Expected format: kubeadm join <endpoint> --token <token> --discovery-token-ca-cert-hash sha256:<hash>
+            join_cmd = stdout.strip()
+            if not join_cmd:
+                return None, None, "Empty response from kubeadm token create"
+
+            # Extract token using regex
+            token_match = re.search(r'--token\s+([a-z0-9]{6}\.[a-z0-9]{16})', join_cmd)
+            if not token_match:
+                return None, None, f"Could not parse token from: {join_cmd}"
+            token = token_match.group(1)
+
+            # Extract CA cert hash
+            hash_match = re.search(r'--discovery-token-ca-cert-hash\s+(sha256:[a-f0-9]{64})', join_cmd)
+            if not hash_match:
+                return None, None, f"Could not parse CA hash from: {join_cmd}"
+            ca_hash = hash_match.group(1)
+
+            typer.secho(f"✅ Got fresh token: {token[:10]}...", fg=typer.colors.GREEN)
+            return token, ca_hash, None
+
+    except Exception as e:
+        return None, None, f"Failed to connect to master: {e}"
+
 
 def _parse_host_string(host_string: str, user_override: Optional[str] = None) -> Tuple[str, str]:
     """Parses a host string which can be in the format 'user@host' or just 'host'."""
@@ -785,6 +838,15 @@ def node_join(
     ssh_key_path: str | None = typer.Option(None, "--ssh-key", help="Path to SSH private key."),
     user: Optional[str] = typer.Option(None, "--user", help="SSH user (overrides user@host)"),
     skip_prepare: bool = typer.Option(False, "--skip-prepare", help="Skip pre-join phases (use if already prepared)."),
+    master: str | None = typer.Option(
+        None,
+        "--master",
+        "-m",
+        help=(
+            "Master node user@host to fetch fresh join credentials. "
+            "If provided, generates a new token instead of using saved secrets."
+        ),
+    ),
     endpoint: str | None = typer.Option(
         None,
         "--endpoint",
@@ -827,18 +889,38 @@ def node_join(
         typer.secho(f"❌ {smsg}", fg=typer.colors.RED)
         raise typer.Exit(1)
 
-    if not secrets.discovery_token_ca_cert_hash:
-        typer.secho(
-            "❌ Missing discovery token CA cert hash. Set with: kitchen k8s config set-secrets --discovery-hash sha256:...",
-            fg=typer.colors.RED,
+    kubeadm_token: str | None = None
+    discovery_hash: str | None = None
+
+    if master:
+        # Get fresh token from master node
+        master_user, master_host = _parse_host_string(master, user_override=user)
+        token, ca_hash, err = _fetch_fresh_join_credentials(
+            master_user, master_host, ssh_key_path, verbose
         )
-        raise typer.Exit(1)
-    if not secrets.kubeadm_token:
-        typer.secho(
-            "❌ Missing kubeadm token. Set with: kitchen k8s config set-secrets --kubeadm-token <token>",
-            fg=typer.colors.RED,
-        )
-        raise typer.Exit(1)
+        if err:
+            typer.secho(f"❌ {err}", fg=typer.colors.RED)
+            raise typer.Exit(1)
+        kubeadm_token = token
+        discovery_hash = ca_hash
+    else:
+        # Use saved secrets (original behavior)
+        if not secrets.discovery_token_ca_cert_hash:
+            typer.secho(
+                "❌ Missing discovery token CA cert hash. Either use --master to fetch fresh credentials, "
+                "or set with: kitchen k8s config set-secrets --discovery-hash sha256:...",
+                fg=typer.colors.RED,
+            )
+            raise typer.Exit(1)
+        if not secrets.kubeadm_token:
+            typer.secho(
+                "❌ Missing kubeadm token. Either use --master to fetch fresh credentials, "
+                "or set with: kitchen k8s config set-secrets --kubeadm-token <token>",
+                fg=typer.colors.RED,
+            )
+            raise typer.Exit(1)
+        kubeadm_token = secrets.kubeadm_token
+        discovery_hash = secrets.discovery_token_ca_cert_hash
 
     # Determine endpoint: explicit, interactive choice, or auto
     if endpoint:
@@ -927,10 +1009,10 @@ def node_join(
             "kind: JoinConfiguration\n"
             "discovery:\n"
             "  bootstrapToken:\n"
-            f"    token: {secrets.kubeadm_token}\n"
+            f"    token: {kubeadm_token}\n"
             f"    apiServerEndpoint: {endpoint}\n"
             "    caCertHashes:\n"
-            f"      - {secrets.discovery_token_ca_cert_hash}\n"
+            f"      - {discovery_hash}\n"
             "nodeRegistration:\n"
             f"  criSocket: {cri_socket}\n"
         )

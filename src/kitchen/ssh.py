@@ -136,8 +136,11 @@ class SSHSession:
                 stdin.write(self._password + "\n")
                 stdin.flush()
             else:
-                # This case should ideally not be reached if authentication required a password
-                logger.warning("Sudo requested but no password available to provide.")
+                # Key-based SSH auth succeeded but sudo still needs a password - prompt for it
+                prompt = f"🔑 Sudo password for {self.user}@{self.host}: "
+                self._password = getpass.getpass(prompt)
+                stdin.write(self._password + "\n")
+                stdin.flush()
 
         # This is how you get the exit code. It's a built-in feature.
         self.exit_code = stdout.channel.recv_exit_status()
