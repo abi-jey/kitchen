@@ -1,10 +1,8 @@
-name: Build and Push Node Manager Docker Image
+name: Build Dev
 
 on:
   push:
-    branches: [ main, dev, 'feature/**', 'develop/**' ]
-  pull_request:
-    branches: [ main, dev ]
+    branches: [ dev, 'develop/**', 'feature/**' ]
 
 env:
   REGISTRY: ghcr.io
@@ -46,9 +44,7 @@ jobs:
         images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
         tags: |
           type=ref,event=branch
-          type=ref,event=pr
           type=sha,prefix={{branch}}-
-          type=raw,value=latest,enable={{is_default_branch}}
           type=raw,value=latest-dev,enable=${{ github.ref == 'refs/heads/dev' }}
 
     - name: Build and push Docker image
@@ -56,6 +52,6 @@ jobs:
       with:
         context: .
         file: ./dockerfiles/node-manager/Dockerfile
-        push: ${{ github.event_name != 'pull_request' }}
+        push: true
         tags: ${{ steps.meta.outputs.tags }}
         labels: ${{ steps.meta.outputs.labels }}
