@@ -89,6 +89,34 @@ class NodeStats(BaseModel):
     average_latency_ms: Optional[float] = None
 
 
+class ConnectivitySummary(BaseModel):
+    """Latest connectivity status for a node."""
+    node_name: str
+    target_ip: str
+    success: bool
+    latency_ms: Optional[float] = None
+    packet_loss: Optional[float] = None
+    measured_at: datetime
+
+
+class NodeWithConnectivity(BaseModel):
+    """Node with its latest connectivity status."""
+    name: str
+    status: str
+    ready: bool
+    schedulable: bool
+    internal_ip: Optional[str] = None
+    tailscale_ip: Optional[str] = None
+    kubelet_version: Optional[str] = None
+    os_image: Optional[str] = None
+    cpu_capacity: Optional[str] = None
+    memory_capacity: Optional[str] = None
+    first_seen_at: datetime
+    last_seen_at: datetime
+    unavailable_since: Optional[datetime] = None
+    connectivity: Optional[ConnectivitySummary] = None
+
+
 worker: Optional[NodeMonitorWorker] = None  # Global reference for handlers
 
 if os.environ.get("SENTRY_DSN"):
@@ -423,8 +451,118 @@ async def root():
         "endpoints": {
             "health": "/health",
             "nodes": "/nodes",
+            "nodes_dashboard": "/nodes/dashboard",
             "node_detail": "/nodes/{node_name}",
             "connectivity": "/nodes/{node_name}/connectivity",
+            "connectivity_latest": "/connectivity/latest",
             "stats": "/stats",
         }
     }
+
+
+@app.get("/nodes/dashboard", response_model=List[NodeWithConnectivity])
+async def get_nodes_dashboard(
+    db: AsyncSession = Depends(get_db_session)
+) -> List[NodeWithConnectivity]:
+    """Get all nodes with their latest connectivity status for dashboard display."""
+    try:
+        # Get all nodes
+        nodes_stmt = select(NodeSnapshot).order_by(NodeSnapshot.name)
+        nodes_result = await db.execute(nodes_stmt)
+        nodes = nodes_result.scalars().all()
+        
+        result = []
+        for node in nodes:
+            # Get latest connectivity for this node
+            conn_stmt = (
+                select(NodeConnectivity)
+                .where(cast(Any, NodeConnectivity.node_name) == node.name)
+                .order_by(desc(cast(Any, NodeConnectivity.measured_at)))
+                .limit(1)
+            )
+            conn_result = await db.execute(conn_stmt)
+            conn = conn_result.scalar_one_or_none()
+            
+            connectivity = None
+            if conn:
+                connectivity = ConnectivitySummary(
+                    node_name=conn.node_name,
+                    target_ip=conn.target_ip,
+                    success=conn.success,
+                    latency_ms=conn.latency_ms,
+                    packet_loss=conn.packet_loss,
+                    measured_at=conn.measured_at,
+                )
+            
+            result.append(NodeWithConnectivity(
+                name=node.name,
+                status=node.status,
+                ready=node.ready,
+                schedulable=node.schedulable,
+                internal_ip=node.internal_ip,
+                tailscale_ip=node.tailscale_ip,
+                kubelet_version=node.kubelet_version,
+                os_image=node.os_image,
+                cpu_capacity=node.cpu_capacity,
+                memory_capacity=node.memory_capacity,
+                first_seen_at=node.first_seen_at,
+                last_seen_at=node.last_seen_at,
+                unavailable_since=node.unavailable_since,
+                connectivity=connectivity,
+            ))
+        
+        return result
+        
+    except Exception as e:
+        logger.error(f"Failed to get nodes dashboard: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/connectivity/latest", response_model=List[ConnectivitySummary])
+async def get_latest_connectivity(
+    db: AsyncSession = Depends(get_db_session)
+) -> List[ConnectivitySummary]:
+    """Get the latest connectivity measurement for all nodes."""
+    try:
+        # Subquery to get max measured_at per node
+        from sqlalchemy import and_
+        
+        subq = (
+            select(
+                NodeConnectivity.node_name,
+                func.max(cast(Any, NodeConnectivity.measured_at)).label("max_at")
+            )
+            .group_by(NodeConnectivity.node_name)
+            .subquery()
+        )
+        
+        stmt = (
+            select(NodeConnectivity)
+            .join(
+                subq,
+                and_(
+                    NodeConnectivity.node_name == subq.c.node_name,
+                    cast(Any, NodeConnectivity.measured_at) == subq.c.max_at
+                )
+            )
+            .order_by(NodeConnectivity.node_name)
+        )
+        
+        result = await db.execute(stmt)
+        records = result.scalars().all()
+        
+        return [
+            ConnectivitySummary(
+                node_name=r.node_name,
+                target_ip=r.target_ip,
+                success=r.success,
+                latency_ms=r.latency_ms,
+                packet_loss=r.packet_loss,
+                measured_at=r.measured_at,
+            )
+            for r in records
+        ]
+        
+    except Exception as e:
+        logger.error(f"Failed to get latest connectivity: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
