@@ -7,10 +7,9 @@ import { NodeGrid } from './components/NodeCard';
 import { NodeDetailPanel } from './components/NodeDetailPanel';
 import type { NodeWithConnectivity } from './types';
 import { AlertTriangle, Loader } from 'lucide-react';
-import './styles.css';
 
 const App: React.FC = () => {
-  const { data, loading, error, lastUpdated, refresh } = useDashboard(30000);
+  const { data, loading, error, lastUpdated, refresh, isConnected } = useDashboard(30000);
   const [selectedNode, setSelectedNode] = useState<NodeWithConnectivity | null>(
     null
   );
@@ -48,6 +47,7 @@ const App: React.FC = () => {
         lastUpdated={lastUpdated}
         onRefresh={refresh}
         loading={loading}
+        isConnected={isConnected}
       />
 
       <main className="app-main">

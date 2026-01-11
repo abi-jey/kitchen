@@ -1,6 +1,7 @@
 """FastAPI application for node manager."""
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
 import os
@@ -8,7 +9,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from typing import List, Any, Optional, cast
 
-from fastapi import FastAPI, HTTPException, Depends, Query
+from fastapi import FastAPI, HTTPException, Depends, Query, WebSocket, WebSocketDisconnect
 from contextlib import asynccontextmanager
 from pydantic import BaseModel
 import sentry_sdk
@@ -18,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from kitchen.node_manager.database import init_db, get_db_session, close_db
 from kitchen.node_manager.models import NodeSnapshot, NodeConnectivity
 from kitchen.node_manager.worker import NodeMonitorWorker
+from kitchen.node_manager.websocket import manager as ws_manager, broadcast_update
 
 # Configure logging
 logging.basicConfig(
@@ -140,6 +142,7 @@ async def lifespan(app: FastAPI):  # type: ignore[override]
     Replaces deprecated @app.on_event usage.
     """
     global worker
+    broadcast_task: Optional[asyncio.Task[None]] = None
     logger.info("Starting Kitchen Node Manager")
     try:
         await init_db()
@@ -150,6 +153,11 @@ async def lifespan(app: FastAPI):  # type: ignore[override]
         )
         await worker.start()
         logger.info("Worker started")
+        
+        # Start WebSocket broadcast task
+        broadcast_task = asyncio.create_task(_broadcast_loop())
+        logger.info("WebSocket broadcast task started")
+        
         yield
     except Exception as e:
         logger.error(f"Failed during startup: {e}")
@@ -157,6 +165,12 @@ async def lifespan(app: FastAPI):  # type: ignore[override]
         raise
     finally:
         logger.info("Shutting down Kitchen Node Manager")
+        if broadcast_task:
+            broadcast_task.cancel()
+            try:
+                await broadcast_task
+            except asyncio.CancelledError:
+                pass
         if worker:
             try:
                 await worker.stop()
@@ -168,6 +182,95 @@ async def lifespan(app: FastAPI):  # type: ignore[override]
             logger.info("Database connections closed")
         except Exception as e:  # pragma: no cover - defensive
             logger.error(f"Error closing database: {e}")
+
+
+async def _broadcast_loop() -> None:
+    """Background task to broadcast dashboard updates to WebSocket clients."""
+    while True:
+        try:
+            await asyncio.sleep(10)  # Broadcast every 10 seconds
+            
+            if not ws_manager.active_connections:
+                continue
+            
+            # Fetch current dashboard data
+            async for db in get_db_session():
+                try:
+                    # Get stats
+                    total_result = await db.execute(select(func.count(cast(Any, NodeSnapshot.id))))
+                    total_nodes = total_result.scalar() or 0
+                    
+                    ready_result = await db.execute(
+                        select(func.count(cast(Any, NodeSnapshot.id))).where(cast(Any, NodeSnapshot.ready) == True)
+                    )
+                    ready_nodes = ready_result.scalar() or 0
+                    
+                    unavailable_result = await db.execute(
+                        select(func.count(cast(Any, NodeSnapshot.id))).where(cast(Any, NodeSnapshot.unavailable_since).is_not(None))
+                    )
+                    unavailable_nodes = unavailable_result.scalar() or 0
+                    
+                    # Get nodes with connectivity
+                    nodes_stmt = select(NodeSnapshot).order_by(NodeSnapshot.name)
+                    nodes_result = await db.execute(nodes_stmt)
+                    nodes = nodes_result.scalars().all()
+                    
+                    nodes_data = []
+                    for node in nodes:
+                        conn_stmt = (
+                            select(NodeConnectivity)
+                            .where(cast(Any, NodeConnectivity.node_name) == node.name)
+                            .order_by(desc(cast(Any, NodeConnectivity.measured_at)))
+                            .limit(1)
+                        )
+                        conn_result = await db.execute(conn_stmt)
+                        conn = conn_result.scalar_one_or_none()
+                        
+                        connectivity = None
+                        if conn:
+                            connectivity = {
+                                "node_name": conn.node_name,
+                                "target_ip": conn.target_ip,
+                                "success": conn.success,
+                                "latency_ms": conn.latency_ms,
+                                "packet_loss": conn.packet_loss,
+                                "measured_at": conn.measured_at,
+                            }
+                        
+                        nodes_data.append({
+                            "name": node.name,
+                            "status": node.status,
+                            "ready": node.ready,
+                            "schedulable": node.schedulable,
+                            "internal_ip": node.internal_ip,
+                            "tailscale_ip": node.tailscale_ip,
+                            "kubelet_version": node.kubelet_version,
+                            "os_image": node.os_image,
+                            "cpu_capacity": node.cpu_capacity,
+                            "memory_capacity": node.memory_capacity,
+                            "first_seen_at": node.first_seen_at,
+                            "last_seen_at": node.last_seen_at,
+                            "unavailable_since": node.unavailable_since,
+                            "connectivity": connectivity,
+                        })
+                    
+                    await broadcast_update("dashboard", {
+                        "stats": {
+                            "total_nodes": total_nodes,
+                            "ready_nodes": ready_nodes,
+                            "not_ready_nodes": total_nodes - ready_nodes - unavailable_nodes,
+                            "unavailable_nodes": unavailable_nodes,
+                        },
+                        "nodes": nodes_data,
+                    })
+                finally:
+                    break
+                    
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.error(f"Error in broadcast loop: {e}")
+            await asyncio.sleep(5)
 
 
 app = FastAPI(
@@ -566,3 +669,23 @@ async def get_latest_connectivity(
     except Exception as e:
         logger.error(f"Failed to get latest connectivity: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket) -> None:
+    """WebSocket endpoint for live dashboard updates."""
+    await ws_manager.connect(websocket)
+    try:
+        while True:
+            # Keep connection alive, handle any incoming messages
+            try:
+                data = await websocket.receive_text()
+                # Client can send ping messages to keep connection alive
+                if data == "ping":
+                    await websocket.send_text("pong")
+            except WebSocketDisconnect:
+                break
+    except Exception as e:
+        logger.error(f"WebSocket error: {e}")
+    finally:
+        await ws_manager.disconnect(websocket)
