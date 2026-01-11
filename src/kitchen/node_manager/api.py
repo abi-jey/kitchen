@@ -406,6 +406,64 @@ async def list_nodes(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/nodes/dashboard", response_model=List[NodeWithConnectivity])
+async def get_nodes_dashboard(
+    db: AsyncSession = Depends(get_db_session)
+) -> List[NodeWithConnectivity]:
+    """Get all nodes with their latest connectivity status for dashboard display."""
+    try:
+        # Get all nodes
+        nodes_stmt = select(NodeSnapshot).order_by(NodeSnapshot.name)
+        nodes_result = await db.execute(nodes_stmt)
+        nodes = nodes_result.scalars().all()
+        
+        result = []
+        for node in nodes:
+            # Get latest connectivity for this node
+            conn_stmt = (
+                select(NodeConnectivity)
+                .where(cast(Any, NodeConnectivity.node_name) == node.name)
+                .order_by(desc(cast(Any, NodeConnectivity.measured_at)))
+                .limit(1)
+            )
+            conn_result = await db.execute(conn_stmt)
+            conn = conn_result.scalar_one_or_none()
+            
+            connectivity = None
+            if conn:
+                connectivity = ConnectivitySummary(
+                    node_name=conn.node_name,
+                    target_ip=conn.target_ip,
+                    success=conn.success,
+                    latency_ms=conn.latency_ms,
+                    packet_loss=conn.packet_loss,
+                    measured_at=conn.measured_at,
+                )
+            
+            result.append(NodeWithConnectivity(
+                name=node.name,
+                status=node.status,
+                ready=node.ready,
+                schedulable=node.schedulable,
+                internal_ip=node.internal_ip,
+                tailscale_ip=node.tailscale_ip,
+                kubelet_version=node.kubelet_version,
+                os_image=node.os_image,
+                cpu_capacity=node.cpu_capacity,
+                memory_capacity=node.memory_capacity,
+                first_seen_at=node.first_seen_at,
+                last_seen_at=node.last_seen_at,
+                unavailable_since=node.unavailable_since,
+                connectivity=connectivity,
+            ))
+        
+        return result
+        
+    except Exception as e:
+        logger.error(f"Failed to get nodes dashboard: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/nodes/{node_name}", response_model=NodeDetail)
 async def get_node(node_name: str, db: AsyncSession = Depends(get_db_session)) -> NodeDetail:
     """Get detailed information about a specific node."""
@@ -561,64 +619,6 @@ async def root():
             "stats": "/stats",
         }
     }
-
-
-@app.get("/nodes/dashboard", response_model=List[NodeWithConnectivity])
-async def get_nodes_dashboard(
-    db: AsyncSession = Depends(get_db_session)
-) -> List[NodeWithConnectivity]:
-    """Get all nodes with their latest connectivity status for dashboard display."""
-    try:
-        # Get all nodes
-        nodes_stmt = select(NodeSnapshot).order_by(NodeSnapshot.name)
-        nodes_result = await db.execute(nodes_stmt)
-        nodes = nodes_result.scalars().all()
-        
-        result = []
-        for node in nodes:
-            # Get latest connectivity for this node
-            conn_stmt = (
-                select(NodeConnectivity)
-                .where(cast(Any, NodeConnectivity.node_name) == node.name)
-                .order_by(desc(cast(Any, NodeConnectivity.measured_at)))
-                .limit(1)
-            )
-            conn_result = await db.execute(conn_stmt)
-            conn = conn_result.scalar_one_or_none()
-            
-            connectivity = None
-            if conn:
-                connectivity = ConnectivitySummary(
-                    node_name=conn.node_name,
-                    target_ip=conn.target_ip,
-                    success=conn.success,
-                    latency_ms=conn.latency_ms,
-                    packet_loss=conn.packet_loss,
-                    measured_at=conn.measured_at,
-                )
-            
-            result.append(NodeWithConnectivity(
-                name=node.name,
-                status=node.status,
-                ready=node.ready,
-                schedulable=node.schedulable,
-                internal_ip=node.internal_ip,
-                tailscale_ip=node.tailscale_ip,
-                kubelet_version=node.kubelet_version,
-                os_image=node.os_image,
-                cpu_capacity=node.cpu_capacity,
-                memory_capacity=node.memory_capacity,
-                first_seen_at=node.first_seen_at,
-                last_seen_at=node.last_seen_at,
-                unavailable_since=node.unavailable_since,
-                connectivity=connectivity,
-            ))
-        
-        return result
-        
-    except Exception as e:
-        logger.error(f"Failed to get nodes dashboard: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/connectivity/latest", response_model=List[ConnectivitySummary])
