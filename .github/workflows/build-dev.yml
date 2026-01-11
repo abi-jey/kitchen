@@ -43,8 +43,7 @@ jobs:
       with:
         images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
         tags: |
-          type=ref,event=branch
-          type=sha,prefix={{branch}}-
+          type=sha,prefix=dev-
           type=raw,value=latest-dev
 
     - name: Build and push Docker image
