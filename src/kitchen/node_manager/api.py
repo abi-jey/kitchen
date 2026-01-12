@@ -189,7 +189,6 @@ async def lifespan(app: FastAPI):  # type: ignore[override]
         logger.info("Database initialized")
         worker = NodeMonitorWorker(
             monitoring_interval=60,  # seconds
-            connectivity_interval=300,  # seconds
         )
         await worker.start()
         logger.info("Worker started")
