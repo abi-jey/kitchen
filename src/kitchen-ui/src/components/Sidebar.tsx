@@ -1,7 +1,7 @@
 // Sidebar navigation component
 
 import React from 'react';
-import { Network, LayoutDashboard, Settings, Activity } from 'lucide-react';
+import { Network, LayoutDashboard, Settings, Activity, Server } from 'lucide-react';
 
 export type ViewType = 'graph' | 'dashboard' | 'history';
 
