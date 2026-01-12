@@ -15,7 +15,7 @@ import {
   NodeProps,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
-import { Loader, Network, RefreshCw } from 'lucide-react';
+import { Loader, Network, RefreshCw, X, Server, Wifi, Clock, Cpu, HardDrive } from 'lucide-react';
 import { getConnectivityGraph } from '../api/client';
 import type { ConnectivityGraph, GraphNode as ApiGraphNode } from '../types';
 import { formatLatency } from '../types';
@@ -27,11 +27,14 @@ interface ClusterNodeData {
   ip: string | null;
   ready: boolean;
   status: string;
+  kubelet_version?: string | null;
+  cpu_capacity?: string | null;
+  memory_capacity?: string | null;
   [key: string]: unknown;
 }
 
 // Custom node component showing hostname and IP
-const ClusterNode: React.FC<NodeProps<Node<ClusterNodeData>>> = ({ data }) => {
+const ClusterNode: React.FC<NodeProps<Node<ClusterNodeData>>> = ({ data, selected }) => {
   const statusColor = data.ready
     ? 'var(--success)'
     : data.status !== 'Ready'
@@ -42,36 +45,60 @@ const ClusterNode: React.FC<NodeProps<Node<ClusterNodeData>>> = ({ data }) => {
     <div
       className="cluster-node"
       style={{
-        background: 'var(--bg-card)',
-        border: `2px solid ${statusColor}`,
-        borderRadius: '8px',
-        padding: '12px 16px',
-        minWidth: '120px',
+        background: `linear-gradient(145deg, var(--bg-card) 0%, ${data.ready ? 'rgba(16, 185, 129, 0.08)' : 'rgba(239, 68, 68, 0.08)'} 100%)`,
+        border: `2px solid ${selected ? 'var(--accent)' : statusColor}`,
+        borderRadius: '12px',
+        padding: '14px 18px',
+        minWidth: '140px',
         textAlign: 'center',
-        boxShadow: 'var(--shadow)',
+        boxShadow: selected 
+          ? '0 0 0 3px rgba(59, 130, 246, 0.3), var(--shadow-lg)' 
+          : 'var(--shadow)',
+        cursor: 'pointer',
+        transition: 'all 0.2s ease',
       }}
     >
-      {/* Left side handles for incoming */}
       <Handle type="target" position={Position.Left} id="left" style={{ visibility: 'hidden' }} />
-      {/* Right side handles for outgoing */}
       <Handle type="source" position={Position.Right} id="right" style={{ visibility: 'hidden' }} />
-      <div
-        style={{
+      
+      {/* Status indicator */}
+      <div style={{
+        position: 'absolute',
+        top: '8px',
+        right: '8px',
+        width: '8px',
+        height: '8px',
+        borderRadius: '50%',
+        background: statusColor,
+        boxShadow: `0 0 6px ${statusColor}`,
+      }} />
+      
+      <div style={{
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: '6px',
+        marginBottom: '6px',
+      }}>
+        <Server size={14} style={{ color: 'var(--text-secondary)' }} />
+        <span style={{
           fontWeight: 600,
-          fontSize: '13px',
+          fontSize: '14px',
           color: 'var(--text-primary)',
-          marginBottom: '4px',
-        }}
-      >
-        {data.label}
+        }}>
+          {data.label}
+        </span>
       </div>
-      <div
-        style={{
-          fontSize: '11px',
-          color: 'var(--text-muted)',
-          fontFamily: 'monospace',
-        }}
-      >
+      
+      <div style={{
+        fontSize: '11px',
+        color: 'var(--text-muted)',
+        fontFamily: 'monospace',
+        background: 'var(--bg-primary)',
+        padding: '4px 8px',
+        borderRadius: '4px',
+        display: 'inline-block',
+      }}>
         {data.ip || 'No IP'}
       </div>
     </div>
@@ -87,14 +114,55 @@ interface ConnectivityGraphViewProps {
   refreshInterval?: number;
 }
 
+// Selected node type for sidebar
+interface SelectedNodeInfo {
+  id: string;
+  label: string;
+  ip: string | null;
+  ready: boolean;
+  status: string;
+  kubelet_version?: string | null;
+  cpu_capacity?: string | null;
+  memory_capacity?: string | null;
+}
+
 export const ConnectivityGraphView: React.FC<ConnectivityGraphViewProps> = ({
   refreshInterval = 30000,
 }) => {
   const [graphData, setGraphData] = useState<ConnectivityGraph | null>(null);
+  const [selectedNode, setSelectedNode] = useState<SelectedNodeInfo | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [nodes, setNodes, onNodesChange] = useNodesState<FlowNode>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<FlowEdge>([]);
+
+  // Close sidebar on Escape key
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && selectedNode) {
+        setSelectedNode(null);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [selectedNode]);
+
+  // Handle node click
+  const onNodeClick = useCallback((_: React.MouseEvent, node: FlowNode) => {
+    const apiNode = graphData?.nodes.find((n) => n.id === node.id);
+    if (apiNode) {
+      setSelectedNode({
+        id: apiNode.id,
+        label: apiNode.label,
+        ip: apiNode.ip,
+        ready: apiNode.ready,
+        status: apiNode.status,
+        kubelet_version: apiNode.kubelet_version,
+        cpu_capacity: apiNode.cpu_capacity,
+        memory_capacity: apiNode.memory_capacity,
+      });
+    }
+  }, [graphData]);
 
   const fetchGraph = useCallback(async () => {
     try {
@@ -320,6 +388,7 @@ export const ConnectivityGraphView: React.FC<ConnectivityGraphViewProps> = ({
           edges={edges}
           onNodesChange={onNodesChange}
           onEdgesChange={onEdgesChange}
+          onNodeClick={onNodeClick}
           nodeTypes={nodeTypes}
           fitView
           fitViewOptions={{ padding: 0.3 }}
@@ -338,6 +407,67 @@ export const ConnectivityGraphView: React.FC<ConnectivityGraphViewProps> = ({
           />
         </ReactFlow>
       </div>
+
+      {/* Node Detail Sidebar - Generated by Copilot */}
+      {selectedNode && (
+        <div className="node-sidebar">
+          <div className="sidebar-header">
+            <div className="sidebar-title">
+              <Server size={20} />
+              <span>{selectedNode.label}</span>
+            </div>
+            <button className="sidebar-close" onClick={() => setSelectedNode(null)}>
+              <X size={20} />
+            </button>
+          </div>
+          <div className="sidebar-content">
+            <div className="sidebar-section">
+              <h4>Connection</h4>
+              <div className="sidebar-field">
+                <span className="field-label">IP Address</span>
+                <span className="field-value">{selectedNode.ip}</span>
+              </div>
+              <div className="sidebar-field">
+                <span className="field-label">Status</span>
+                <span className={`field-value status-badge ${selectedNode.status}`}>
+                  {selectedNode.status === 'healthy' ? 'Healthy' : 
+                   selectedNode.status === 'degraded' ? 'Degraded' : 'Unhealthy'}
+                </span>
+              </div>
+            </div>
+            
+            {selectedNode.kubelet_version && (
+              <div className="sidebar-section">
+                <h4>Kubernetes</h4>
+                <div className="sidebar-field">
+                  <span className="field-label">Kubelet Version</span>
+                  <span className="field-value">{selectedNode.kubelet_version}</span>
+                </div>
+              </div>
+            )}
+            
+            {(selectedNode.cpu_capacity || selectedNode.memory_capacity) && (
+              <div className="sidebar-section">
+                <h4>Resources</h4>
+                {selectedNode.cpu_capacity && (
+                  <div className="sidebar-field">
+                    <Cpu size={14} />
+                    <span className="field-label">CPU</span>
+                    <span className="field-value">{selectedNode.cpu_capacity}</span>
+                  </div>
+                )}
+                {selectedNode.memory_capacity && (
+                  <div className="sidebar-field">
+                    <HardDrive size={14} />
+                    <span className="field-label">Memory</span>
+                    <span className="field-value">{selectedNode.memory_capacity}</span>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {stats && (
         <div className="graph-stats">
