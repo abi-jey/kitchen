@@ -74,6 +74,28 @@ export async function getConnectivityGraph(): Promise<ConnectivityGraph> {
   return fetchJson<ConnectivityGraph>('/connectivity/graph');
 }
 
+export interface AllConnectivityHistoryOptions {
+  limit?: number;
+  sourceNode?: string;
+  targetNode?: string;
+  success?: boolean;
+}
+
+export async function getAllConnectivityHistory(
+  options: AllConnectivityHistoryOptions = {}
+): Promise<ConnectivityRecord[]> {
+  const params = new URLSearchParams();
+  if (options.limit !== undefined) params.append('limit', options.limit.toString());
+  if (options.sourceNode !== undefined) params.append('source_node', options.sourceNode);
+  if (options.targetNode !== undefined) params.append('target_node', options.targetNode);
+  if (options.success !== undefined) params.append('success', options.success.toString());
+  
+  const query = params.toString();
+  return fetchJson<ConnectivityRecord[]>(
+    `/connectivity/history${query ? `?${query}` : ''}`
+  );
+}
+
 // Polling hook data types
 export interface DashboardData {
   health: HealthStatus;

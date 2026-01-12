@@ -1,8 +1,8 @@
 // Health History View - displays connectivity history records
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { Loader, History, CheckCircle, XCircle, Clock, RefreshCw, Filter, Search } from 'lucide-react';
-import { getNodesDashboard, getNodeConnectivityHistory } from '../api/client';
+import { getNodesDashboard, getAllConnectivityHistory } from '../api/client';
 import type { ConnectivityRecord, NodeWithConnectivity } from '../types';
 import { formatLatency, formatTimeAgo } from '../types';
 
@@ -14,7 +14,8 @@ export const HealthHistoryView: React.FC<HealthHistoryViewProps> = ({
   refreshInterval = 60000,
 }) => {
   const [nodes, setNodes] = useState<NodeWithConnectivity[]>([]);
-  const [selectedNode, setSelectedNode] = useState<string>('');
+  const [selectedSourceNode, setSelectedSourceNode] = useState<string>('');
+  const [selectedTargetNode, setSelectedTargetNode] = useState<string>('');
   const [history, setHistory] = useState<ConnectivityRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [historyLoading, setHistoryLoading] = useState(false);
@@ -28,28 +29,36 @@ export const HealthHistoryView: React.FC<HealthHistoryViewProps> = ({
     try {
       const data = await getNodesDashboard();
       setNodes(data);
-      if (data.length > 0 && !selectedNode) {
-        setSelectedNode(data[0].name);
-      }
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load nodes');
     } finally {
       setLoading(false);
     }
-  }, [selectedNode]);
+  }, []);
 
-  // Fetch history for selected node
+  // Fetch all connectivity history with filters
   const fetchHistory = useCallback(async () => {
-    if (!selectedNode) return;
-    
     setHistoryLoading(true);
     try {
-      const options: { limit: number; success?: boolean } = { limit };
+      const options: { 
+        limit: number; 
+        sourceNode?: string; 
+        targetNode?: string;
+        success?: boolean 
+      } = { limit };
+      
+      if (selectedSourceNode) {
+        options.sourceNode = selectedSourceNode;
+      }
+      if (selectedTargetNode) {
+        options.targetNode = selectedTargetNode;
+      }
       if (filterSuccess !== null) {
         options.success = filterSuccess;
       }
-      const data = await getNodeConnectivityHistory(selectedNode, options);
+      
+      const data = await getAllConnectivityHistory(options);
       setHistory(data);
     } catch (err) {
       console.error('Failed to fetch history:', err);
@@ -57,7 +66,7 @@ export const HealthHistoryView: React.FC<HealthHistoryViewProps> = ({
     } finally {
       setHistoryLoading(false);
     }
-  }, [selectedNode, limit, filterSuccess]);
+  }, [selectedSourceNode, selectedTargetNode, limit, filterSuccess]);
 
   useEffect(() => {
     fetchNodes();
@@ -66,8 +75,18 @@ export const HealthHistoryView: React.FC<HealthHistoryViewProps> = ({
   }, [fetchNodes, refreshInterval]);
 
   useEffect(() => {
-    fetchHistory();
-  }, [fetchHistory]);
+    if (!loading) {
+      fetchHistory();
+    }
+  }, [fetchHistory, loading]);
+
+  // Get unique source nodes from history for filter dropdown
+  const sourceNodes = useMemo(() => {
+    const sources = new Set<string>();
+    history.forEach(r => sources.add(r.source_node));
+    nodes.forEach(n => sources.add(n.name));
+    return Array.from(sources).sort();
+  }, [history, nodes]);
 
   // Filter history by search term
   const filteredHistory = history.filter((record) => {
@@ -118,11 +137,27 @@ export const HealthHistoryView: React.FC<HealthHistoryViewProps> = ({
 
       <div className="history-filters">
         <div className="filter-group">
-          <label>Node</label>
+          <label>Source Node</label>
           <select
-            value={selectedNode}
-            onChange={(e) => setSelectedNode(e.target.value)}
+            value={selectedSourceNode}
+            onChange={(e) => setSelectedSourceNode(e.target.value)}
           >
+            <option value="">All Sources</option>
+            {sourceNodes.map((name) => (
+              <option key={name} value={name}>
+                {name}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        <div className="filter-group">
+          <label>Target Node</label>
+          <select
+            value={selectedTargetNode}
+            onChange={(e) => setSelectedTargetNode(e.target.value)}
+          >
+            <option value="">All Targets</option>
             {nodes.map((node) => (
               <option key={node.name} value={node.name}>
                 {node.name}
@@ -196,56 +231,62 @@ export const HealthHistoryView: React.FC<HealthHistoryViewProps> = ({
           <p>No records found</p>
         </div>
       ) : (
-        <div className="history-table-container">
-          <table className="history-table">
-            <thead>
-              <tr>
-                <th>Status</th>
-                <th>Time</th>
-                <th>Source Node</th>
-                <th>Target Node</th>
-                <th>Target IP</th>
-                <th>Latency</th>
-                <th>Packet Loss</th>
-                <th>Ping Count</th>
-                <th>Error</th>
-              </tr>
-            </thead>
-            <tbody>
-              {filteredHistory.map((record) => (
-                <tr key={record.id} className={record.success ? 'success' : 'failure'}>
-                  <td className="status-cell">
-                    {record.success ? (
-                      <CheckCircle size={16} className="success-icon" />
-                    ) : (
-                      <XCircle size={16} className="error-icon" />
-                    )}
-                  </td>
-                  <td className="time-cell">
-                    <Clock size={12} />
-                    <span title={record.measured_at}>{formatTimeAgo(record.measured_at)}</span>
-                  </td>
-                  <td className="node-cell">{record.source_node}</td>
-                  <td className="node-cell">{record.node_name}</td>
-                  <td className="ip-cell">{record.target_ip}</td>
-                  <td className="latency-cell">
-                    {record.latency_ms !== null && record.latency_ms !== undefined
-                      ? formatLatency(record.latency_ms)
-                      : '-'}
-                  </td>
-                  <td className="loss-cell">
-                    {record.packet_loss !== null && record.packet_loss !== undefined
-                      ? `${record.packet_loss.toFixed(1)}%`
-                      : '-'}
-                  </td>
-                  <td className="ping-cell">{record.ping_count || '-'}</td>
-                  <td className="error-cell" title={record.error_message || ''}>
-                    {record.error_message || '-'}
-                  </td>
+        <div className="history-table-wrapper">
+          <div className="history-table-header">
+            <table className="history-table">
+              <thead>
+                <tr>
+                  <th>Status</th>
+                  <th>Time</th>
+                  <th>Source Node</th>
+                  <th>Target Node</th>
+                  <th>Target IP</th>
+                  <th>Latency</th>
+                  <th>Packet Loss</th>
+                  <th>Ping Count</th>
+                  <th>Error</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+            </table>
+          </div>
+          <div className="history-table-body">
+            <table className="history-table">
+              <tbody>
+                {filteredHistory.map((record) => (
+                  <tr key={record.id} className={record.success ? 'success' : 'failure'}>
+                    <td className="status-cell">
+                      {record.success ? (
+                        <CheckCircle size={16} className="success-icon" />
+                      ) : (
+                        <XCircle size={16} className="error-icon" />
+                      )}
+                    </td>
+                    <td className="time-cell">
+                      <Clock size={12} />
+                      <span title={record.measured_at}>{formatTimeAgo(record.measured_at)}</span>
+                    </td>
+                    <td className="node-cell">{record.source_node}</td>
+                    <td className="node-cell">{record.node_name}</td>
+                    <td className="ip-cell">{record.target_ip}</td>
+                    <td className="latency-cell">
+                      {record.latency_ms !== null && record.latency_ms !== undefined
+                        ? formatLatency(record.latency_ms)
+                        : '-'}
+                    </td>
+                    <td className="loss-cell">
+                      {record.packet_loss !== null && record.packet_loss !== undefined
+                        ? `${record.packet_loss.toFixed(1)}%`
+                        : '-'}
+                    </td>
+                    <td className="ping-cell">{record.ping_count || '-'}</td>
+                    <td className="error-cell" title={record.error_message || ''}>
+                      {record.error_message || '-'}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
     </div>

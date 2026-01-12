@@ -659,6 +659,59 @@ async def get_node_connectivity_history(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/connectivity/history", response_model=List[ConnectivityRecord])
+async def get_all_connectivity_history(
+    limit: int = Query(100, description="Maximum number of records to return", ge=1, le=1000),
+    source_node: Optional[str] = Query(None, description="Filter by source node"),
+    target_node: Optional[str] = Query(None, description="Filter by target node"),
+    success: Optional[bool] = Query(None, description="Filter by success status"),
+    db: AsyncSession = Depends(get_db_session)
+) -> List[ConnectivityRecord]:
+    """Get all connectivity history with optional filtering.
+    
+    Returns the latest connectivity records ordered by measured_at descending.
+    By default returns all records (all sources, all targets).
+    """
+    try:
+        stmt = select(NodeConnectivity)
+        
+        if source_node is not None:
+            stmt = stmt.where(cast(Any, NodeConnectivity.source_node) == source_node)  # type: ignore[arg-type]
+        
+        if target_node is not None:
+            stmt = stmt.where(cast(Any, NodeConnectivity.node_name) == target_node)  # type: ignore[arg-type]
+        
+        if success is not None:
+            stmt = stmt.where(cast(Any, NodeConnectivity.success) == success)  # type: ignore[arg-type]
+        
+        stmt = stmt.order_by(desc(cast(Any, NodeConnectivity.measured_at))).limit(limit)  # type: ignore[arg-type]
+        
+        result = await db.execute(stmt)
+        records = result.scalars().all()
+        
+        return [
+            ConnectivityRecord(
+                id=record.id,
+                source_node=record.source_node,
+                node_name=record.node_name,
+                target_ip=record.target_ip,
+                success=record.success,
+                latency_ms=record.latency_ms,
+                packet_loss=record.packet_loss,
+                error_message=record.error_message,
+                error_code=record.error_code,
+                ping_count=record.ping_count,
+                timeout_seconds=record.timeout_seconds,
+                measured_at=record.measured_at,
+            )
+            for record in records
+        ]
+        
+    except Exception as e:
+        logger.error(f"Failed to get connectivity history: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/stats", response_model=NodeStats)
 async def get_stats(db: AsyncSession = Depends(get_db_session)) -> NodeStats:
     """Get statistics about all nodes."""
