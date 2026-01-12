@@ -196,11 +196,13 @@
 .history-table-header {
   flex-shrink: 0;
   background: var(--bg-card);
+  /* Account for scrollbar width in body */
+  padding-right: 8px;
 }
 
 .history-table-body {
   flex: 1;
-  overflow-y: auto;
+  overflow-y: scroll;
   overflow-x: hidden;
 }
 
