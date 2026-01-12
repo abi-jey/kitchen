@@ -1,24 +1,89 @@
-// Connectivity Graph visualization component
+// Connectivity Graph visualization using React Flow
 
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import {
+  ReactFlow,
+  Node,
+  Edge,
+  Background,
+  Controls,
+  MiniMap,
+  useNodesState,
+  useEdgesState,
+  MarkerType,
+  Handle,
+  Position,
+  NodeProps,
+} from '@xyflow/react';
+import '@xyflow/react/dist/style.css';
 import { Loader, Network, RefreshCw } from 'lucide-react';
 import { getConnectivityGraph } from '../api/client';
-import type { ConnectivityGraph, GraphNode, GraphEdge } from '../types';
+import type { ConnectivityGraph, GraphNode as ApiGraphNode } from '../types';
 import { formatLatency } from '../types';
 
-interface NodePosition {
-  x: number;
-  y: number;
-  node: GraphNode;
+// Node data type for React Flow
+interface ClusterNodeData {
+  type: 'hub' | 'node';
+  label: string;
+  ip: string | null;
+  ready: boolean;
+  status: string;
+  [key: string]: unknown;
 }
 
-interface TooltipState {
-  visible: boolean;
-  x: number;
-  y: number;
-  node: GraphNode | null;
-  edge: GraphEdge | null;
-}
+// Custom node component showing hostname and IP
+const ClusterNode: React.FC<NodeProps<Node<ClusterNodeData>>> = ({ data }) => {
+  const isHub = data.type === 'hub';
+  const statusColor = isHub
+    ? 'var(--accent)'
+    : data.ready
+      ? 'var(--success)'
+      : data.status !== 'Ready'
+        ? 'var(--warning)'
+        : 'var(--error)';
+
+  return (
+    <div
+      className="cluster-node"
+      style={{
+        background: 'var(--bg-card)',
+        border: `2px solid ${statusColor}`,
+        borderRadius: isHub ? '12px' : '8px',
+        padding: isHub ? '16px 20px' : '12px 16px',
+        minWidth: isHub ? '140px' : '120px',
+        textAlign: 'center',
+        boxShadow: 'var(--shadow)',
+      }}
+    >
+      <Handle type="target" position={Position.Top} style={{ visibility: 'hidden' }} />
+      <div
+        style={{
+          fontWeight: 600,
+          fontSize: isHub ? '14px' : '13px',
+          color: 'var(--text-primary)',
+          marginBottom: '4px',
+        }}
+      >
+        {data.label}
+      </div>
+      <div
+        style={{
+          fontSize: '11px',
+          color: 'var(--text-muted)',
+          fontFamily: 'monospace',
+        }}
+      >
+        {isHub ? 'Hub' : data.ip || 'No IP'}
+      </div>
+      <Handle type="source" position={Position.Bottom} style={{ visibility: 'hidden' }} />
+    </div>
+  );
+};
+
+const nodeTypes = { cluster: ClusterNode };
+
+type FlowNode = Node<ClusterNodeData>;
+type FlowEdge = Edge;
 
 interface ConnectivityGraphViewProps {
   refreshInterval?: number;
@@ -30,13 +95,8 @@ export const ConnectivityGraphView: React.FC<ConnectivityGraphViewProps> = ({
   const [graphData, setGraphData] = useState<ConnectivityGraph | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [tooltip, setTooltip] = useState<TooltipState>({
-    visible: false,
-    x: 0,
-    y: 0,
-    node: null,
-    edge: null,
-  });
+  const [nodes, setNodes, onNodesChange] = useNodesState<FlowNode>([]);
+  const [edges, setEdges, onEdgesChange] = useEdgesState<FlowEdge>([]);
 
   const fetchGraph = useCallback(async () => {
     try {
@@ -56,47 +116,109 @@ export const ConnectivityGraphView: React.FC<ConnectivityGraphViewProps> = ({
     return () => clearInterval(interval);
   }, [fetchGraph, refreshInterval]);
 
-  // Calculate node positions in a radial layout
-  const nodePositions = useMemo<NodePosition[]>(() => {
-    if (!graphData) return [];
+  // Convert API data to React Flow nodes and edges
+  useEffect(() => {
+    if (!graphData) return;
 
     const hubNode = graphData.nodes.find((n) => n.type === 'hub');
     const otherNodes = graphData.nodes.filter((n) => n.type !== 'hub');
 
     const centerX = 400;
     const centerY = 300;
-    const radius = Math.min(250, 80 + otherNodes.length * 20);
+    const radius = Math.max(200, 100 + otherNodes.length * 40);
 
-    const positions: NodePosition[] = [];
+    const flowNodes: FlowNode[] = [];
 
     // Hub in center
     if (hubNode) {
-      positions.push({ x: centerX, y: centerY, node: hubNode });
+      flowNodes.push({
+        id: hubNode.id,
+        type: 'cluster',
+        position: { x: centerX - 70, y: centerY - 30 },
+        data: {
+          type: hubNode.type,
+          label: hubNode.label,
+          ip: hubNode.ip,
+          ready: hubNode.ready,
+          status: hubNode.status,
+        },
+      });
     }
 
     // Other nodes in a circle
     otherNodes.forEach((node, index) => {
       const angle = (2 * Math.PI * index) / otherNodes.length - Math.PI / 2;
-      positions.push({
-        x: centerX + radius * Math.cos(angle),
-        y: centerY + radius * Math.sin(angle),
-        node,
+      flowNodes.push({
+        id: node.id,
+        type: 'cluster',
+        position: {
+          x: centerX + radius * Math.cos(angle) - 60,
+          y: centerY + radius * Math.sin(angle) - 25,
+        },
+        data: {
+          type: node.type,
+          label: node.label,
+          ip: node.ip,
+          ready: node.ready,
+          status: node.status,
+        },
       });
     });
 
-    return positions;
-  }, [graphData]);
+    // Create edges
+    const flowEdges: FlowEdge[] = graphData.edges.map((edge) => {
+      const isSuccess = edge.success;
+      const hasMeasurement = edge.measured_at !== null;
 
-  // Build edge data with positions
-  const edgeData = useMemo(() => {
-    if (!graphData || nodePositions.length === 0) return [];
-
-    return graphData.edges.map((edge) => {
-      const sourcePos = nodePositions.find((p) => p.node.id === edge.source);
-      const targetPos = nodePositions.find((p) => p.node.id === edge.target);
-      return { edge, sourcePos, targetPos };
+      return {
+        id: `${edge.source}-${edge.target}`,
+        source: edge.source,
+        target: edge.target,
+        type: 'default',
+        animated: !isSuccess && hasMeasurement,
+        style: {
+          stroke: !hasMeasurement
+            ? 'var(--text-muted)'
+            : isSuccess
+              ? 'var(--success)'
+              : 'var(--error)',
+          strokeWidth: 2,
+          strokeDasharray: !hasMeasurement ? '4 4' : isSuccess ? undefined : '6 3',
+        },
+        label: hasMeasurement
+          ? isSuccess
+            ? formatLatency(edge.latency_ms)
+            : 'Failed'
+          : undefined,
+        labelStyle: {
+          fontSize: 10,
+          fontWeight: 500,
+          fill: !hasMeasurement
+            ? 'var(--text-muted)'
+            : isSuccess
+              ? 'var(--success)'
+              : 'var(--error)',
+        },
+        labelBgStyle: {
+          fill: 'var(--bg-secondary)',
+          fillOpacity: 0.9,
+        },
+        markerEnd: {
+          type: MarkerType.ArrowClosed,
+          color: !hasMeasurement
+            ? 'var(--text-muted)'
+            : isSuccess
+              ? 'var(--success)'
+              : 'var(--error)',
+          width: 15,
+          height: 15,
+        },
+      };
     });
-  }, [graphData, nodePositions]);
+
+    setNodes(flowNodes);
+    setEdges(flowEdges);
+  }, [graphData, setNodes, setEdges]);
 
   // Calculate stats
   const stats = useMemo(() => {
@@ -120,36 +242,6 @@ export const ConnectivityGraphView: React.FC<ConnectivityGraphViewProps> = ({
       avgLatency,
     };
   }, [graphData]);
-
-  const getNodeStatus = (node: GraphNode): string => {
-    if (node.type === 'hub') return 'hub';
-    if (!node.ready) return 'unreachable';
-    if (node.status !== 'Ready') return 'degraded';
-    return 'healthy';
-  };
-
-  const handleNodeHover = (
-    e: React.MouseEvent,
-    node: GraphNode,
-    entering: boolean
-  ) => {
-    if (entering) {
-      const rect = (e.target as SVGElement)
-        .closest('.graph-canvas')
-        ?.getBoundingClientRect();
-      if (rect) {
-        setTooltip({
-          visible: true,
-          x: e.clientX - rect.left + 10,
-          y: e.clientY - rect.top + 10,
-          node,
-          edge: null,
-        });
-      }
-    } else {
-      setTooltip({ visible: false, x: 0, y: 0, node: null, edge: null });
-    }
-  };
 
   if (loading && !graphData) {
     return (
@@ -188,11 +280,11 @@ export const ConnectivityGraphView: React.FC<ConnectivityGraphViewProps> = ({
   return (
     <div className="graph-container">
       <div className="graph-header">
-        <h2>Node Connectivity Graph</h2>
+        <h2>Node Connectivity</h2>
         <div className="graph-legend">
           <div className="legend-item">
             <span className="legend-dot hub" />
-            <span>Node Manager</span>
+            <span>Hub</span>
           </div>
           <div className="legend-item">
             <span className="legend-dot healthy" />
@@ -208,13 +300,7 @@ export const ConnectivityGraphView: React.FC<ConnectivityGraphViewProps> = ({
           </div>
           <button
             onClick={fetchGraph}
-            style={{
-              background: 'none',
-              border: 'none',
-              cursor: 'pointer',
-              color: 'var(--text-secondary)',
-              padding: '4px',
-            }}
+            className="refresh-btn"
             title="Refresh"
           >
             <RefreshCw size={16} />
@@ -223,142 +309,42 @@ export const ConnectivityGraphView: React.FC<ConnectivityGraphViewProps> = ({
       </div>
 
       <div className="graph-canvas">
-        <svg className="graph-svg" viewBox="0 0 800 600" preserveAspectRatio="xMidYMid meet">
-          {/* Edges */}
-          <g className="edges">
-            {edgeData.map(({ edge, sourcePos, targetPos }) => {
-              if (!sourcePos || !targetPos) return null;
-
-              const midX = (sourcePos.x + targetPos.x) / 2;
-              const midY = (sourcePos.y + targetPos.y) / 2;
-              const edgeClass = !edge.measured_at
-                ? 'no-data'
-                : edge.success
-                  ? 'success'
-                  : 'failure';
-
-              return (
-                <g key={`${edge.source}-${edge.target}`}>
-                  <line
-                    className={`graph-edge ${edgeClass}`}
-                    x1={sourcePos.x}
-                    y1={sourcePos.y}
-                    x2={targetPos.x}
-                    y2={targetPos.y}
-                  />
-                  {edge.measured_at && (
-                    <>
-                      <rect
-                        className="edge-label-bg"
-                        x={midX - 22}
-                        y={midY - 8}
-                        width={44}
-                        height={16}
-                      />
-                      <text className={`edge-label ${edgeClass}`} x={midX} y={midY}>
-                        {edge.success
-                          ? formatLatency(edge.latency_ms)
-                          : 'Failed'}
-                      </text>
-                    </>
-                  )}
-                </g>
-              );
-            })}
-          </g>
-
-          {/* Nodes */}
-          <g className="nodes">
-            {nodePositions.map((pos) => {
-              const status = getNodeStatus(pos.node);
-              const nodeRadius = pos.node.type === 'hub' ? 40 : 32;
-
-              return (
-                <g
-                  key={pos.node.id}
-                  className="graph-node"
-                  transform={`translate(${pos.x}, ${pos.y})`}
-                  onMouseEnter={(e) => handleNodeHover(e, pos.node, true)}
-                  onMouseLeave={(e) => handleNodeHover(e, pos.node, false)}
-                >
-                  <circle
-                    className={`node-circle ${status}`}
-                    r={nodeRadius}
-                  />
-                  <text className="node-label" y={-4}>
-                    {pos.node.label.length > 12
-                      ? pos.node.label.slice(0, 10) + '…'
-                      : pos.node.label}
-                  </text>
-                  <text className="node-sublabel" y={10}>
-                    {pos.node.type === 'hub'
-                      ? 'Hub'
-                      : pos.node.ip?.split('.').slice(-2).join('.') || ''}
-                  </text>
-                </g>
-              );
-            })}
-          </g>
-        </svg>
-
-        {/* Tooltip */}
-        {tooltip.visible && tooltip.node && (
-          <div
-            className="node-tooltip"
-            style={{ left: tooltip.x, top: tooltip.y }}
-          >
-            <div className="tooltip-header">
-              <span
-                className="tooltip-status"
-                style={{
-                  background:
-                    tooltip.node.type === 'hub'
-                      ? 'var(--accent)'
-                      : tooltip.node.ready
-                        ? 'var(--success)'
-                        : 'var(--error)',
-                }}
-              />
-              <span className="tooltip-name">{tooltip.node.label}</span>
-            </div>
-            <div className="tooltip-row">
-              <span className="tooltip-label">Type</span>
-              <span className="tooltip-value">
-                {tooltip.node.type === 'hub' ? 'Node Manager' : 'Cluster Node'}
-              </span>
-            </div>
-            <div className="tooltip-row">
-              <span className="tooltip-label">IP</span>
-              <span className="tooltip-value">{tooltip.node.ip || 'N/A'}</span>
-            </div>
-            <div className="tooltip-row">
-              <span className="tooltip-label">Status</span>
-              <span className="tooltip-value">{tooltip.node.status}</span>
-            </div>
-            {tooltip.node.type !== 'hub' && (
-              <>
-                <div className="tooltip-row">
-                  <span className="tooltip-label">Kubelet</span>
-                  <span className="tooltip-value">
-                    {tooltip.node.kubelet_version || 'N/A'}
-                  </span>
-                </div>
-                <div className="tooltip-row">
-                  <span className="tooltip-label">CPU</span>
-                  <span className="tooltip-value">
-                    {tooltip.node.cpu_capacity || 'N/A'}
-                  </span>
-                </div>
-                <div className="tooltip-row">
-                  <span className="tooltip-label">Memory</span>
-                  <span className="tooltip-value">
-                    {tooltip.node.memory_capacity || 'N/A'}
-                  </span>
-                </div>
-              </>
-            )}
-          </div>
-        )}
+        <ReactFlow
+          nodes={nodes}
+          edges={edges}
+          onNodesChange={onNodesChange}
+          onEdgesChange={onEdgesChange}
+          nodeTypes={nodeTypes}
+          fitView
+          fitViewOptions={{ padding: 0.3 }}
+          minZoom={0.3}
+          maxZoom={2}
+          proOptions={{ hideAttribution: true }}
+        >
+          <Background color="var(--border)" gap={20} size={1} />
+          <Controls
+            showInteractive={false}
+            style={{
+              background: 'var(--bg-secondary)',
+              border: '1px solid var(--border)',
+              borderRadius: '8px',
+            }}
+          />
+          <MiniMap
+            nodeColor={(node) => {
+              if (node.data.type === 'hub') return 'var(--accent)';
+              if (!node.data.ready) return 'var(--error)';
+              if (node.data.status !== 'Ready') return 'var(--warning)';
+              return 'var(--success)';
+            }}
+            maskColor="rgba(0, 0, 0, 0.7)"
+            style={{
+              background: 'var(--bg-secondary)',
+              border: '1px solid var(--border)',
+              borderRadius: '8px',
+            }}
+          />
+        </ReactFlow>
       </div>
 
       {stats && (

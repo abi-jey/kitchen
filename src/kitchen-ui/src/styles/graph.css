@@ -60,10 +60,56 @@
   background: var(--accent);
 }
 
+.refresh-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--text-secondary);
+  padding: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  transition: all 0.2s ease;
+}
+
+.refresh-btn:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+
 .graph-canvas {
   flex: 1;
   position: relative;
   overflow: hidden;
+}
+
+/* React Flow customization */
+.react-flow__controls button {
+  background: var(--bg-card) !important;
+  border: 1px solid var(--border) !important;
+  color: var(--text-secondary) !important;
+}
+
+.react-flow__controls button:hover {
+  background: var(--bg-hover) !important;
+  color: var(--text-primary) !important;
+}
+
+.react-flow__controls button svg {
+  fill: currentColor !important;
+}
+
+.react-flow__minimap {
+  background: var(--bg-secondary) !important;
+}
+
+.react-flow__edge-text {
+  font-size: 10px;
+}
+
+.react-flow__edge-textbg {
+  fill: var(--bg-secondary);
 }
 
 .graph-svg {
