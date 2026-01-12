@@ -91,13 +91,17 @@ export interface NodeDetail extends NodeSummary {
 }
 
 export interface ConnectivityRecord {
+  id: number;
+  source_node: string;
   node_name: string;
   target_ip: string;
   success: boolean;
   latency_ms: number | null;
   packet_loss: number | null;
   error_message: string | null;
+  error_code: number | null;
   ping_count: number;
+  timeout_seconds: number;
   measured_at: string;
 }
 
