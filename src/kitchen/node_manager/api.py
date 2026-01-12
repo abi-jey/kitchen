@@ -21,9 +21,17 @@ from kitchen.node_manager.models import NodeSnapshot, NodeConnectivity
 from kitchen.node_manager.worker import NodeMonitorWorker
 from kitchen.node_manager.websocket import manager as ws_manager, broadcast_update
 
-# Configure logging
+# Configure logging based on environment
+def _get_log_level() -> int:
+    """Get log level from environment variables."""
+    debug = os.getenv("DEBUG", "false").lower() in ("true", "1", "yes")
+    if debug:
+        return logging.DEBUG
+    level_name = os.getenv("LOG_LEVEL", "INFO").upper()
+    return getattr(logging, level_name, logging.INFO)
+
 logging.basicConfig(
-    level=logging.INFO,
+    level=_get_log_level(),
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
