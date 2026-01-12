@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from datetime import datetime, timedelta, timezone
 from typing import Dict, Any, List, Optional
 
@@ -26,6 +27,7 @@ class NodeMonitorWorker:
         connectivity_interval: int = 300,  # seconds
         ping_count: int = 4,
         ping_timeout: int = 5,
+        enable_connectivity: bool | None = None,  # None = auto-detect from env
     ) -> None:
         """Initialize the node monitor worker.
         
@@ -34,9 +36,19 @@ class NodeMonitorWorker:
             connectivity_interval: How often to ping nodes (seconds) 
             ping_count: Number of ping packets per connectivity check
             ping_timeout: Timeout for ping operations (seconds)
+            enable_connectivity: Whether to run connectivity checks from server.
+                                 Set to False when using DaemonSet agents.
+                                 Default: reads from ENABLE_SERVER_CONNECTIVITY env var.
         """
         self.monitoring_interval = monitoring_interval
         self.connectivity_interval = connectivity_interval
+        
+        # Determine if server should run connectivity checks
+        if enable_connectivity is None:
+            env_val = os.getenv("ENABLE_SERVER_CONNECTIVITY", "false").lower()
+            self.enable_connectivity = env_val in ("true", "1", "yes")
+        else:
+            self.enable_connectivity = enable_connectivity
         
         self.k8s_client = K8sClient()
         self.connectivity_checker = DirectConnectivityChecker(
@@ -48,7 +60,8 @@ class NodeMonitorWorker:
         self._connectivity_task: Optional[asyncio.Task] = None
         self._running = False
         
-        logger.info(f"NodeMonitorWorker initialized with {monitoring_interval}s monitoring, {connectivity_interval}s connectivity intervals")
+        connectivity_status = "enabled" if self.enable_connectivity else "disabled (using agents)"
+        logger.info(f"NodeMonitorWorker initialized: monitoring={monitoring_interval}s, connectivity={connectivity_status}")
     
     async def start(self) -> None:
         """Start the background monitoring tasks."""
@@ -59,9 +72,15 @@ class NodeMonitorWorker:
         self._running = True
         logger.info("Starting node monitor worker")
         
-        # Start monitoring tasks
+        # Start monitoring task (always runs)
         self._monitoring_task = asyncio.create_task(self._monitoring_loop())
-        self._connectivity_task = asyncio.create_task(self._connectivity_loop(self.connectivity_interval))
+        
+        # Start connectivity task only if enabled (disabled when using DaemonSet agents)
+        if self.enable_connectivity:
+            self._connectivity_task = asyncio.create_task(self._connectivity_loop(self.connectivity_interval))
+            logger.info("Server-side connectivity checks enabled")
+        else:
+            logger.info("Server-side connectivity checks disabled (expecting agent reports)")
         
         logger.info("Node monitor worker started successfully")
     
