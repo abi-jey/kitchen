@@ -271,7 +271,8 @@ spec:
           capabilities:
             add:
             - NET_RAW
-          allowPrivilegeEscalation: false
+          # allowPrivilegeEscalation must be true for setuid ping to work on newer runtimes
+          allowPrivilegeEscalation: true
           readOnlyRootFilesystem: true
         
         envFrom:
