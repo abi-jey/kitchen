@@ -84,10 +84,8 @@ class HealthStatus(BaseModel):
     """Health status of the node manager."""
     healthy: bool
     kubernetes_healthy: bool
-    ping_available: bool
     worker_running: bool
     monitoring_task_running: bool
-    connectivity_task_running: bool
     database_healthy: bool
     node_count: int
     last_monitoring_cycle: Optional[datetime] = None
@@ -385,7 +383,7 @@ async def get_health(db: AsyncSession = Depends(get_db_session)) -> HealthStatus
         
         overall_healthy = (
             db_healthy and 
-            worker_status.get("running", False) and
+            worker_status.get("worker_running", False) and
             worker_status.get("kubernetes_healthy", False)
         )
         
@@ -394,7 +392,9 @@ async def get_health(db: AsyncSession = Depends(get_db_session)) -> HealthStatus
             database_healthy=db_healthy,
             node_count=node_count,
             last_monitoring_cycle=last_monitoring,
-            **worker_status
+            kubernetes_healthy=worker_status.get("kubernetes_healthy", False),
+            worker_running=worker_status.get("worker_running", False),
+            monitoring_task_running=worker_status.get("monitoring_task_running", False),
         )
         
     except Exception as e:

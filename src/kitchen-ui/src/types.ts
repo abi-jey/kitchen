@@ -3,10 +3,8 @@
 export interface HealthStatus {
   healthy: boolean;
   kubernetes_healthy: boolean;
-  ping_available: boolean;
   worker_running: boolean;
   monitoring_task_running: boolean;
-  connectivity_task_running: boolean;
   database_healthy: boolean;
   node_count: number;
   last_monitoring_cycle: string | null;

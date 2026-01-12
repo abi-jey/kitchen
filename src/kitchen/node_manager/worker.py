@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 from datetime import datetime, timedelta, timezone
 from typing import Dict, Any, List, Optional
 
@@ -12,56 +11,35 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from kitchen.node_manager.database import AsyncSessionLocal
 from kitchen.node_manager.k8s_client import K8sClient
-from kitchen.node_manager.connectivity import DirectConnectivityChecker
 from kitchen.node_manager.models import NodeSnapshot, NodeConnectivity
 
 logger = logging.getLogger(__name__)
 
 
 class NodeMonitorWorker:
-    """Background worker for monitoring Kubernetes nodes and connectivity."""
+    """Background worker for monitoring Kubernetes nodes.
+    
+    Note: Connectivity checks are handled by DaemonSet agents running on each node.
+    This worker only monitors K8s node status.
+    """
     
     def __init__(
         self,
         monitoring_interval: int = 60,  # seconds
-        connectivity_interval: int = 300,  # seconds
-        ping_count: int = 4,
-        ping_timeout: int = 5,
-        enable_connectivity: bool | None = None,  # None = auto-detect from env
     ) -> None:
         """Initialize the node monitor worker.
         
         Args:
             monitoring_interval: How often to check node status (seconds)
-            connectivity_interval: How often to ping nodes (seconds) 
-            ping_count: Number of ping packets per connectivity check
-            ping_timeout: Timeout for ping operations (seconds)
-            enable_connectivity: Whether to run connectivity checks from server.
-                                 Set to False when using DaemonSet agents.
-                                 Default: reads from ENABLE_SERVER_CONNECTIVITY env var.
         """
         self.monitoring_interval = monitoring_interval
-        self.connectivity_interval = connectivity_interval
-        
-        # Determine if server should run connectivity checks
-        if enable_connectivity is None:
-            env_val = os.getenv("ENABLE_SERVER_CONNECTIVITY", "false").lower()
-            self.enable_connectivity = env_val in ("true", "1", "yes")
-        else:
-            self.enable_connectivity = enable_connectivity
         
         self.k8s_client = K8sClient()
-        self.connectivity_checker = DirectConnectivityChecker(
-            ping_count=ping_count,
-            timeout_seconds=ping_timeout
-        )
         
         self._monitoring_task: Optional[asyncio.Task] = None
-        self._connectivity_task: Optional[asyncio.Task] = None
         self._running = False
         
-        connectivity_status = "enabled" if self.enable_connectivity else "disabled (using agents)"
-        logger.info(f"NodeMonitorWorker initialized: monitoring={monitoring_interval}s, connectivity={connectivity_status}")
+        logger.info(f"NodeMonitorWorker initialized: monitoring_interval={monitoring_interval}s")
     
     async def start(self) -> None:
         """Start the background monitoring tasks."""
@@ -72,17 +50,10 @@ class NodeMonitorWorker:
         self._running = True
         logger.info("Starting node monitor worker")
         
-        # Start monitoring task (always runs)
+        # Start monitoring task
         self._monitoring_task = asyncio.create_task(self._monitoring_loop())
         
-        # Start connectivity task only if enabled (disabled when using DaemonSet agents)
-        if self.enable_connectivity:
-            self._connectivity_task = asyncio.create_task(self._connectivity_loop(self.connectivity_interval))
-            logger.info("Server-side connectivity checks enabled")
-        else:
-            logger.info("Server-side connectivity checks disabled (expecting agent reports)")
-        
-        logger.info("Node monitor worker started successfully")
+        logger.info("Node monitor worker started (connectivity via agents)")
     
     async def stop(self) -> None:
         """Stop the background monitoring tasks."""
@@ -92,18 +63,11 @@ class NodeMonitorWorker:
         logger.info("Stopping node monitor worker")
         self._running = False
         
-        # Cancel tasks
+        # Cancel monitoring task
         if self._monitoring_task:
             self._monitoring_task.cancel()
             try:
                 await self._monitoring_task
-            except asyncio.CancelledError:
-                pass
-        
-        if self._connectivity_task:
-            self._connectivity_task.cancel()
-            try:
-                await self._connectivity_task
             except asyncio.CancelledError:
                 pass
         
@@ -124,21 +88,6 @@ class NodeMonitorWorker:
                 await asyncio.sleep(self.monitoring_interval)
         
         logger.info("Node monitoring loop stopped")
-
-    async def _connectivity_loop(self, delay: float) -> None:
-        """Main loop for connectivity monitoring."""
-        logger.info("Starting connectivity monitoring loop")
-        
-        # Wait a bit before starting connectivity checks to let node monitoring initialize
-
-        while self._running:
-            try:
-                await self._check_node_connectivity()
-            except Exception as e:
-                logger.error(f"Error in connectivity loop: {e}", exc_info=True)
-            await asyncio.sleep(delay)
-        
-        logger.info("Connectivity monitoring loop stopped")
     
     async def _update_node_snapshots(self) -> None:
         """Update node snapshots from Kubernetes API."""
@@ -235,76 +184,11 @@ class NodeMonitorWorker:
             node.unavailable_since = current_time
             logger.warning(f"Marked node {node.name} as unavailable")
     
-    async def _check_node_connectivity(self) -> None:
-        """Check connectivity to all nodes via direct ping."""
-        try:
-            # Get nodes with IP addresses for pinging
-            async with AsyncSessionLocal() as session:
-                stmt = select(NodeSnapshot).where(
-                    NodeSnapshot.unavailable_since.is_(None)  # Only ping available nodes
-                )
-                result = await session.execute(stmt)
-                nodes = result.scalars().all()
-                
-                if not nodes:
-                    logger.info("No nodes available for connectivity check")
-                    return
-                
-                # Build target list (prefer Tailscale IPs if available, otherwise use internal IPs)
-                ping_targets = {}
-                for node in nodes:
-                    target_ip = node.tailscale_ip or node.internal_ip
-                    if target_ip:
-                        ping_targets[node.name] = target_ip
-                    else:
-                        logger.warning(f"No IP address found for node {node.name}")
-                
-                if not ping_targets:
-                    logger.warning("No pingable IP addresses found for any nodes")
-                    return
-                
-            # Perform batch ping
-            ping_results = await self.connectivity_checker.batch_ping_nodes(ping_targets)
-            
-            # Store results in database
-            async with AsyncSessionLocal() as session:
-                connectivity_records = []
-                
-                for node_name, result in ping_results.items():
-                    target_ip = ping_targets[node_name]
-                    
-                    record = NodeConnectivity(
-                        node_name=node_name,
-                        target_ip=target_ip,
-                        success=result["success"],
-                        latency_ms=result["latency_ms"],
-                        packet_loss=result["packet_loss"],
-                        error_message=result["error_message"],
-                        error_code=result["error_code"],
-                        ping_count=self.connectivity_checker.ping_count,
-                        timeout_seconds=self.connectivity_checker.timeout_seconds,
-                        measured_at=result["measured_at"]
-                    )
-                    connectivity_records.append(record)
-                
-                session.add_all(connectivity_records)
-                await session.commit()
-                
-                successful_pings = sum(1 for r in ping_results.values() if r["success"])
-                logger.info(f"Connectivity check completed: {successful_pings}/{len(ping_results)} nodes reachable")
-                
-        except Exception as e:
-            logger.error(f"Failed to check node connectivity: {e}", exc_info=True)
-            raise
-    
     async def get_health_status(self) -> Dict[str, Any]:
         """Get worker health and status information."""
         return {
             "worker_running": self._running,
             "monitoring_task_running": self._monitoring_task and not self._monitoring_task.done() if self._monitoring_task else False,
-            "connectivity_task_running": self._connectivity_task and not self._connectivity_task.done() if self._connectivity_task else False,
             "kubernetes_healthy": await self.k8s_client.is_healthy(),
-            "ping_available": self.connectivity_checker.is_ping_available(),
             "monitoring_interval": self.monitoring_interval,
-            "connectivity_interval": self.connectivity_interval,
         }
