@@ -75,6 +75,7 @@ export const HealthHistoryView: React.FC<HealthHistoryViewProps> = ({
     const search = searchTerm.toLowerCase();
     return (
       record.source_node.toLowerCase().includes(search) ||
+      record.node_name.toLowerCase().includes(search) ||
       record.target_ip.toLowerCase().includes(search) ||
       (record.error_message && record.error_message.toLowerCase().includes(search))
     );
@@ -202,6 +203,7 @@ export const HealthHistoryView: React.FC<HealthHistoryViewProps> = ({
                 <th>Status</th>
                 <th>Time</th>
                 <th>Source Node</th>
+                <th>Target Node</th>
                 <th>Target IP</th>
                 <th>Latency</th>
                 <th>Packet Loss</th>
@@ -223,7 +225,8 @@ export const HealthHistoryView: React.FC<HealthHistoryViewProps> = ({
                     <Clock size={12} />
                     <span title={record.measured_at}>{formatTimeAgo(record.measured_at)}</span>
                   </td>
-                  <td className="source-cell">{record.source_node}</td>
+                  <td className="node-cell">{record.source_node}</td>
+                  <td className="node-cell">{record.node_name}</td>
                   <td className="ip-cell">{record.target_ip}</td>
                   <td className="latency-cell">
                     {record.latency_ms !== null && record.latency_ms !== undefined

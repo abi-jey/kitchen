@@ -187,46 +187,88 @@
 .history-table-container {
   flex: 1;
   overflow: auto;
-  padding: 16px 24px;
+  padding: 0;
+  position: relative;
+}
+
+/* Custom scrollbar styling */
+.history-table-container::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.history-table-container::-webkit-scrollbar-track {
+  background: var(--bg-secondary);
+  border-radius: 4px;
+}
+
+.history-table-container::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 4px;
+}
+
+.history-table-container::-webkit-scrollbar-thumb:hover {
+  background: var(--text-muted);
+}
+
+.history-table-container::-webkit-scrollbar-corner {
+  background: var(--bg-secondary);
 }
 
 .history-table {
   width: 100%;
-  border-collapse: collapse;
+  border-collapse: separate;
+  border-spacing: 0;
   font-size: 0.875rem;
 }
 
 .history-table th {
   text-align: left;
   padding: 12px 16px;
-  background: var(--bg-secondary);
+  background: var(--bg-card);
   color: var(--text-muted);
   font-weight: 600;
   font-size: 0.75rem;
   text-transform: uppercase;
   letter-spacing: 0.05em;
-  border-bottom: 1px solid var(--border);
+  border-bottom: 2px solid var(--border);
   position: sticky;
   top: 0;
-  z-index: 1;
+  z-index: 10;
+  white-space: nowrap;
+}
+
+.history-table th::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -1px;
+  height: 1px;
+  background: var(--border);
 }
 
 .history-table td {
   padding: 12px 16px;
   border-bottom: 1px solid var(--border);
   color: var(--text-primary);
+  vertical-align: middle;
+}
+
+.history-table tbody tr {
+  background: var(--bg-primary);
 }
 
 .history-table tbody tr:hover {
   background: var(--bg-hover);
 }
 
-.history-table tbody tr.success {
-  border-left: 3px solid var(--success);
+.history-table tbody tr.success td:first-child {
+  box-shadow: inset 3px 0 0 var(--success);
 }
 
-.history-table tbody tr.failure {
-  border-left: 3px solid var(--error);
+.history-table tbody tr.failure td:first-child {
+  box-shadow: inset 3px 0 0 var(--error);
 }
 
 .status-cell {
@@ -252,7 +294,7 @@
   color: var(--text-muted);
 }
 
-.source-cell,
+.node-cell,
 .ip-cell {
   font-family: 'JetBrains Mono', 'Fira Code', monospace;
   font-size: 0.8rem;
