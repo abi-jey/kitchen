@@ -234,7 +234,10 @@ export const ConnectivityGraphView: React.FC<ConnectivityGraphViewProps> = ({
 
     // Edge paths
     edges.append('path')
-      .attr('class', 'edge-path')
+      .attr('class', (d) => {
+        if (d.measured_at && d.success) return 'edge-path flowing';
+        return 'edge-path';
+      })
       .attr('fill', 'none')
       .attr('stroke-width', 2)
       .attr('stroke', (d) => {
@@ -243,7 +246,8 @@ export const ConnectivityGraphView: React.FC<ConnectivityGraphViewProps> = ({
       })
       .attr('stroke-dasharray', (d) => {
         if (!d.measured_at) return '4 4';
-        return d.success ? null : '6 3';
+        if (d.success) return '10 10';  // Flowing dash pattern
+        return '6 3';
       })
       .attr('marker-end', (d) => {
         if (!d.measured_at) return 'url(#arrow-muted)';
@@ -436,59 +440,105 @@ export const ConnectivityGraphView: React.FC<ConnectivityGraphViewProps> = ({
       // Update node positions
       nodes.attr('transform', (d) => `translate(${d.x}, ${d.y})`);
 
-      // Update edge paths with proper curved paths for bidirectional edges
+      // Update edge paths with smooth bezier curves
       edges.select('.edge-path')
         .attr('d', (d) => {
           if (!d.sourceNode || !d.targetNode) return '';
           
           const points = getClosestPoints(d.sourceNode, d.targetNode);
           
-          // Check if there's a reverse edge
+          // Check if there's a reverse edge (bidirectional)
           const hasReverse = d3Edges.some(
             (e) => e.source === d.target && e.target === d.source
           );
           
+          // Calculate edge length for curve intensity
+          const dx = points.tx - points.sx;
+          const dy = points.ty - points.sy;
+          const len = Math.sqrt(dx * dx + dy * dy);
+          
+          // Always use smooth curves for a flowing appearance
+          // Curve offset based on edge length (more distance = more curve)
+          const curveIntensity = Math.min(len * 0.25, 50);
+          
           if (hasReverse) {
-            // Use quadratic curve for bidirectional edges
+            // Use offset curves for bidirectional edges
             const isFirst = d.source < d.target;
-            const midX = (points.sx + points.tx) / 2;
-            const midY = (points.sy + points.ty) / 2;
+            const offset = isFirst ? curveIntensity : -curveIntensity;
             
-            // Calculate perpendicular offset
-            const dx = points.tx - points.sx;
-            const dy = points.ty - points.sy;
-            const len = Math.sqrt(dx * dx + dy * dy);
-            const offset = isFirst ? 20 : -20;
+            // Perpendicular vector for offset
             const perpX = -dy / len * offset;
             const perpY = dx / len * offset;
             
-            const ctrlX = midX + perpX;
-            const ctrlY = midY + perpY;
+            // Control points at 1/3 and 2/3 along the path, offset perpendicular
+            const ctrl1X = points.sx + dx * 0.25 + perpX;
+            const ctrl1Y = points.sy + dy * 0.25 + perpY;
+            const ctrl2X = points.sx + dx * 0.75 + perpX;
+            const ctrl2Y = points.sy + dy * 0.75 + perpY;
             
-            return `M${points.sx},${points.sy} Q${ctrlX},${ctrlY} ${points.tx},${points.ty}`;
+            return `M${points.sx},${points.sy} C${ctrl1X},${ctrl1Y} ${ctrl2X},${ctrl2Y} ${points.tx},${points.ty}`;
           }
           
-          // Straight line for single direction
-          return `M${points.sx},${points.sy} L${points.tx},${points.ty}`;
+          // Single direction: slight curve for visual appeal
+          const offset = curveIntensity * 0.3;
+          const perpX = -dy / len * offset;
+          const perpY = dx / len * offset;
+          
+          const ctrl1X = points.sx + dx * 0.25 + perpX;
+          const ctrl1Y = points.sy + dy * 0.25 + perpY;
+          const ctrl2X = points.sx + dx * 0.75 + perpX;
+          const ctrl2Y = points.sy + dy * 0.75 + perpY;
+          
+          return `M${points.sx},${points.sy} C${ctrl1X},${ctrl1Y} ${ctrl2X},${ctrl2Y} ${points.tx},${points.ty}`;
         });
 
-      // Update edge labels
+      // Update edge labels position along the curve
       edges.select('.edge-label')
         .attr('x', (d) => {
           if (!d.sourceNode || !d.targetNode) return 0;
-          return (d.sourceNode.x + d.targetNode.x) / 2;
-        })
-        .attr('y', (d) => {
-          if (!d.sourceNode || !d.targetNode) return 0;
+          const points = getClosestPoints(d.sourceNode, d.targetNode);
+          const dx = points.tx - points.sx;
+          const dy = points.ty - points.sy;
+          const len = Math.sqrt(dx * dx + dy * dy);
+          const curveIntensity = Math.min(len * 0.25, 50);
+          
           const hasReverse = d3Edges.some(
             (e) => e.source === d.target && e.target === d.source
           );
-          const baseY = (d.sourceNode.y + d.targetNode.y) / 2;
+          
+          const midX = (points.sx + points.tx) / 2;
+          
           if (hasReverse) {
             const isFirst = d.source < d.target;
-            return baseY + (isFirst ? -10 : 10);
+            const offset = isFirst ? curveIntensity * 0.5 : -curveIntensity * 0.5;
+            const perpX = -dy / len * offset;
+            return midX + perpX;
           }
-          return baseY;
+          
+          return midX + (-dy / len * curveIntensity * 0.15);
+        })
+        .attr('y', (d) => {
+          if (!d.sourceNode || !d.targetNode) return 0;
+          const points = getClosestPoints(d.sourceNode, d.targetNode);
+          const dx = points.tx - points.sx;
+          const dy = points.ty - points.sy;
+          const len = Math.sqrt(dx * dx + dy * dy);
+          const curveIntensity = Math.min(len * 0.25, 50);
+          
+          const hasReverse = d3Edges.some(
+            (e) => e.source === d.target && e.target === d.source
+          );
+          
+          const midY = (points.sy + points.ty) / 2;
+          
+          if (hasReverse) {
+            const isFirst = d.source < d.target;
+            const offset = isFirst ? curveIntensity * 0.5 : -curveIntensity * 0.5;
+            const perpY = dx / len * offset;
+            return midY + perpY;
+          }
+          
+          return midY + (dx / len * curveIntensity * 0.15);
         });
 
       // Update edge label backgrounds

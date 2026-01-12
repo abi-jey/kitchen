@@ -573,3 +573,27 @@
   font-family: inherit;
   word-break: break-word;
 }
+
+/* D3 Edge animations */
+.edge-path {
+  transition: stroke 0.3s ease, stroke-dasharray 0.3s ease;
+}
+
+.edge-path.flowing {
+  animation: flowAnimation 1.5s linear infinite;
+}
+
+@keyframes flowAnimation {
+  0% {
+    stroke-dashoffset: 20;
+  }
+  100% {
+    stroke-dashoffset: 0;
+  }
+}
+
+/* Smooth edge appearance */
+.edges .edge-path {
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
