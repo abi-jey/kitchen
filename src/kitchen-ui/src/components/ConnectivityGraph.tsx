@@ -7,7 +7,6 @@ import {
   Edge,
   Background,
   Controls,
-  MiniMap,
   useNodesState,
   useEdgesState,
   MarkerType,
@@ -120,41 +119,35 @@ export const ConnectivityGraphView: React.FC<ConnectivityGraphViewProps> = ({
   useEffect(() => {
     if (!graphData) return;
 
-    const hubNode = graphData.nodes.find((n) => n.type === 'hub');
-    const otherNodes = graphData.nodes.filter((n) => n.type !== 'hub');
+    // Only show actual cluster nodes, not the hub
+    const clusterNodes = graphData.nodes.filter((n) => n.type !== 'hub');
 
     const centerX = 400;
     const centerY = 300;
-    const radius = Math.max(200, 100 + otherNodes.length * 40);
+    const radius = Math.max(180, 80 + clusterNodes.length * 50);
 
     const flowNodes: FlowNode[] = [];
 
-    // Hub in center
-    if (hubNode) {
-      flowNodes.push({
-        id: hubNode.id,
-        type: 'cluster',
-        position: { x: centerX - 70, y: centerY - 30 },
-        data: {
-          type: hubNode.type,
-          label: hubNode.label,
-          ip: hubNode.ip,
-          ready: hubNode.ready,
-          status: hubNode.status,
-        },
-      });
-    }
-
-    // Other nodes in a circle
-    otherNodes.forEach((node, index) => {
-      const angle = (2 * Math.PI * index) / otherNodes.length - Math.PI / 2;
+    // Position nodes in a circle (or line if only 2)
+    clusterNodes.forEach((node, index) => {
+      let x, y;
+      if (clusterNodes.length === 1) {
+        x = centerX - 60;
+        y = centerY - 25;
+      } else if (clusterNodes.length === 2) {
+        // Two nodes: place them horizontally
+        x = centerX + (index === 0 ? -radius / 2 : radius / 2) - 60;
+        y = centerY - 25;
+      } else {
+        // Multiple nodes: circular layout
+        const angle = (2 * Math.PI * index) / clusterNodes.length - Math.PI / 2;
+        x = centerX + radius * Math.cos(angle) - 60;
+        y = centerY + radius * Math.sin(angle) - 25;
+      }
       flowNodes.push({
         id: node.id,
         type: 'cluster',
-        position: {
-          x: centerX + radius * Math.cos(angle) - 60,
-          y: centerY + radius * Math.sin(angle) - 25,
-        },
+        position: { x, y },
         data: {
           type: node.type,
           label: node.label,
@@ -165,8 +158,10 @@ export const ConnectivityGraphView: React.FC<ConnectivityGraphViewProps> = ({
       });
     });
 
-    // Create edges
-    const flowEdges: FlowEdge[] = graphData.edges.map((edge) => {
+    // Only show edges between actual nodes (filter out hub edges)
+    const flowEdges: FlowEdge[] = graphData.edges
+      .filter((edge) => edge.source !== 'node-manager' && edge.target !== 'node-manager')
+      .map((edge) => {
       const isSuccess = edge.success;
       const hasMeasurement = edge.measured_at !== null;
 
@@ -283,10 +278,6 @@ export const ConnectivityGraphView: React.FC<ConnectivityGraphViewProps> = ({
         <h2>Node Connectivity</h2>
         <div className="graph-legend">
           <div className="legend-item">
-            <span className="legend-dot hub" />
-            <span>Hub</span>
-          </div>
-          <div className="legend-item">
             <span className="legend-dot healthy" />
             <span>Healthy</span>
           </div>
@@ -324,20 +315,6 @@ export const ConnectivityGraphView: React.FC<ConnectivityGraphViewProps> = ({
           <Background color="var(--border)" gap={20} size={1} />
           <Controls
             showInteractive={false}
-            style={{
-              background: 'var(--bg-secondary)',
-              border: '1px solid var(--border)',
-              borderRadius: '8px',
-            }}
-          />
-          <MiniMap
-            nodeColor={(node) => {
-              if (node.data.type === 'hub') return 'var(--accent)';
-              if (!node.data.ready) return 'var(--error)';
-              if (node.data.status !== 'Ready') return 'var(--warning)';
-              return 'var(--success)';
-            }}
-            maskColor="rgba(0, 0, 0, 0.7)"
             style={{
               background: 'var(--bg-secondary)',
               border: '1px solid var(--border)',
