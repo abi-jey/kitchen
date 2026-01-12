@@ -11,30 +11,39 @@ import typer
 
 node_manager_app = typer.Typer(help="Node manager commands")
 
+# Default image base (without component suffix)
+DEFAULT_IMAGE_BASE = "ghcr.io/abi-jey/kitchen"
+DEFAULT_TAG = "latest"
+
 
 @node_manager_app.command("deploy")
 def deploy_node_manager(
     namespace: str = typer.Option("kitchen-system", "--namespace", "-n", help="Kubernetes namespace"),
-    image: str = typer.Option("ghcr.io/abi-jey/kitchen/node-manager:latest", "--image", help="Docker image to deploy"),
-    tag: Optional[str] = typer.Option(None, "--tag", help="Docker image tag (overrides image tag)"),
+    tag: Optional[str] = typer.Option(None, "--tag", help="Docker image tag for both server and agent"),
+    server_image: Optional[str] = typer.Option(None, "--server-image", help="Full server image (overrides tag)"),
+    agent_image: Optional[str] = typer.Option(None, "--agent-image", help="Full agent image (overrides tag)"),
     database_url: Optional[str] = typer.Option(None, "--database-url", help="PostgreSQL connection string"),
     sentry_dsn: Optional[str] = typer.Option(None, "--sentry-dsn", help="Sentry DSN for error tracking (optional)"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Show what would be deployed without applying"),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable verbose output"),
 ) -> None:
-    """Deploy node manager to Kubernetes cluster."""
+    """Deploy node manager to Kubernetes cluster.
+    
+    Deploys two components:
+    - node-manager-server: API + UI (Deployment)
+    - node-agent: Connectivity monitoring (DaemonSet)
+    """
     typer.secho("🚀 Deploying Kitchen Node Manager...", fg=typer.colors.BLUE)
     
-    # Handle tag parameter - override image tag if provided
-    final_image = image
+    # Determine final image tags
+    effective_tag = tag or DEFAULT_TAG
+    final_server_image = server_image or f"{DEFAULT_IMAGE_BASE}/node-manager-server:{effective_tag}"
+    final_agent_image = agent_image or f"{DEFAULT_IMAGE_BASE}/node-agent:{effective_tag}"
+    
     if tag:
-        # Extract image name without tag and append new tag
-        if ":" in image:
-            image_name = image.rsplit(":", 1)[0]
-        else:
-            image_name = image
-        final_image = f"{image_name}:{tag}"
-        typer.echo(f"📝 Using custom tag: {tag} -> {final_image}")
+        typer.echo(f"📝 Using tag: {effective_tag}")
+    typer.echo(f"📝 Server image: {final_server_image}")
+    typer.echo(f"📝 Agent image: {final_agent_image}")
     
     # Check prerequisites
     if not database_url:
@@ -65,14 +74,17 @@ def deploy_node_manager(
     with open(manifests_file, 'r') as f:
         manifest_content = f.read()
     
-    # Update image reference
-    if final_image != "ghcr.io/abi-jey/kitchen/node-manager:latest":
-        typer.echo(f"📝 Using custom image: {final_image}")
-        # Replace the image in the deployment
-        manifest_content = manifest_content.replace(
-            "image: ghcr.io/abi-jey/kitchen/node-manager:latest",
-            f"image: {final_image}"
-        )
+    # Update server image reference
+    manifest_content = manifest_content.replace(
+        "image: ghcr.io/abi-jey/kitchen/node-manager-server:latest",
+        f"image: {final_server_image}"
+    )
+    
+    # Update agent image reference
+    manifest_content = manifest_content.replace(
+        "image: ghcr.io/abi-jey/kitchen/node-agent:latest",
+        f"image: {final_agent_image}"
+    )
     
     # Update database configuration if provided
     if database_url:
@@ -85,8 +97,6 @@ def deploy_node_manager(
     # Update Sentry DSN if provided
     if sentry_dsn:
         typer.echo("📝 Adding Sentry DSN configuration...")
-        # Find the secret stringData section and add SENTRY_DSN
-        # Replace the placeholder or add after DB_NAME
         manifest_content = manifest_content.replace(
             '  DB_NAME: "kitchen_node_manager"',
             f'  DB_NAME: "kitchen_node_manager"\n  SENTRY_DSN: "{sentry_dsn}"'
@@ -121,11 +131,9 @@ def deploy_node_manager(
                     
             if not dry_run:
                 typer.secho("✅ Node Manager deployed", fg=typer.colors.GREEN)
-                typer.echo(f"Monitor deployment: kubectl get pods -n {namespace} -l app=node-manager")
-                typer.echo(f"Check logs: kubectl logs -n {namespace} deployment/node-manager -f")
-                
-                # Show which image was deployed
-                typer.echo(f"📦 Deployed image: {final_image}")
+                typer.echo(f"Monitor server: kubectl get pods -n {namespace} -l app=node-manager-server")
+                typer.echo(f"Monitor agents: kubectl get pods -n {namespace} -l app=node-agent")
+                typer.echo(f"Check server logs: kubectl logs -n {namespace} deployment/node-manager-server -f")
                 
                 if not database_url:
                     typer.echo("")
@@ -134,7 +142,7 @@ def deploy_node_manager(
                     typer.echo(f"   kubectl edit secret node-manager-secrets -n {namespace}")
                     typer.echo("2. Update the DATABASE_URL with your PostgreSQL connection string")
                     typer.echo("3. Restart the deployment to pick up the new configuration:")
-                    typer.echo(f"   kubectl rollout restart deployment/node-manager -n {namespace}")
+                    typer.echo(f"   kubectl rollout restart deployment/node-manager-server -n {namespace}")
             else:
                 typer.echo("Node Manager would be deployed:")
                 typer.echo(result.stdout)
@@ -164,36 +172,29 @@ def node_manager_status(
     """Check node manager status."""
     typer.secho("📊 Checking Node Manager status...", fg=typer.colors.BLUE)
     
-    # Check pods
-    cmd = ["kubectl", "get", "pods", "-n", namespace, "-l", "app=node-manager"]
+    # Check server pods
+    typer.echo("\n🖥️  Server Pods:")
+    cmd = ["kubectl", "get", "pods", "-n", namespace, "-l", "app=node-manager-server"]
     if verbose:
         cmd.extend(["-o", "wide"])
     
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, check=True)
-        if verbose:
-            typer.echo(f"📋 Command executed: {' '.join(cmd)}")
-            
-        typer.echo("Node Manager Pods:")
         typer.echo(result.stdout)
-        
-        if verbose:
-            # Get additional pod details
-            try:
-                describe_result = subprocess.run(
-                    ["kubectl", "describe", "pods", "-n", namespace, "-l", "app=node-manager"],
-                    capture_output=True, text=True, check=True
-                )
-                typer.echo("\n📋 Detailed Pod Information:")
-                typer.echo(describe_result.stdout)
-            except subprocess.CalledProcessError:
-                pass
-                
     except subprocess.CalledProcessError as e:
-        typer.secho(f"❌ Failed to get pod status: {e.stderr}", fg=typer.colors.RED)
-        if verbose:
-            typer.echo(f"📋 Command that failed: {' '.join(cmd)}")
-        raise typer.Exit(1)
+        typer.secho(f"❌ Failed to get server pod status: {e.stderr}", fg=typer.colors.RED)
+    
+    # Check agent pods
+    typer.echo("🔌 Agent Pods (DaemonSet):")
+    cmd = ["kubectl", "get", "pods", "-n", namespace, "-l", "app=node-agent"]
+    if verbose:
+        cmd.extend(["-o", "wide"])
+    
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        typer.echo(result.stdout)
+    except subprocess.CalledProcessError as e:
+        typer.secho(f"❌ Failed to get agent pod status: {e.stderr}", fg=typer.colors.RED)
     
     # Check service
     try:
@@ -201,7 +202,7 @@ def node_manager_status(
             ["kubectl", "get", "service", "-n", namespace, "node-manager"],
             capture_output=True, text=True, check=True
         )
-        typer.echo("Node Manager Service:")
+        typer.echo("📡 Node Manager Service:")
         typer.echo(result.stdout)
     except subprocess.CalledProcessError as e:
         typer.secho(f"❌ Failed to get service status: {e.stderr}", fg=typer.colors.RED)
@@ -214,14 +215,22 @@ def node_manager_status(
 @node_manager_app.command("logs")
 def node_manager_logs(
     namespace: str = typer.Option("kitchen-system", "--namespace", "-n", help="Kubernetes namespace"),
+    component: str = typer.Option("server", "--component", "-c", help="Component to view logs for (server or agent)"),
     follow: bool = typer.Option(False, "--follow", "-f", help="Follow log output"),
     tail: int = typer.Option(100, "--tail", help="Number of recent lines to show"),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable verbose output"),
 ) -> None:
     """View node manager logs."""
-    typer.secho("📋 Viewing Node Manager logs...", fg=typer.colors.BLUE)
+    if component == "server":
+        typer.secho("📋 Viewing Node Manager Server logs...", fg=typer.colors.BLUE)
+        cmd = ["kubectl", "logs", "-n", namespace, "deployment/node-manager-server", f"--tail={tail}"]
+    elif component == "agent":
+        typer.secho("📋 Viewing Node Agent logs (all pods)...", fg=typer.colors.BLUE)
+        cmd = ["kubectl", "logs", "-n", namespace, "-l", "app=node-agent", f"--tail={tail}"]
+    else:
+        typer.secho(f"❌ Unknown component: {component}. Use 'server' or 'agent'", fg=typer.colors.RED)
+        raise typer.Exit(1)
     
-    cmd = ["kubectl", "logs", "-n", namespace, "deployment/node-manager", f"--tail={tail}"]
     if follow:
         cmd.append("-f")
     
@@ -229,7 +238,6 @@ def node_manager_logs(
         typer.echo(f"📋 Command executed: {' '.join(cmd)}")
     
     try:
-        # Use subprocess.run with no capture_output so logs stream to terminal
         subprocess.run(cmd, check=True)
     except subprocess.CalledProcessError as e:
         typer.secho(f"❌ Failed to get logs: {e}", fg=typer.colors.RED)
