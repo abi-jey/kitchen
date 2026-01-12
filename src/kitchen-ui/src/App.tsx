@@ -3,6 +3,8 @@ import { useWebSocket } from './hooks/useWebSocket';
 import { Sidebar, type ViewType } from './components/Sidebar';
 import { DashboardView } from './components/DashboardView';
 import { ConnectivityGraphView } from './components/ConnectivityGraph';
+import { HealthHistoryView } from './components/HealthHistoryView';
+import './styles/history.css';
 
 const App: React.FC = () => {
   const [currentView, setCurrentView] = useState<ViewType>('graph');
@@ -19,6 +21,7 @@ const App: React.FC = () => {
       <div className="app-content">
         {currentView === 'graph' && <ConnectivityGraphView refreshInterval={30000} />}
         {currentView === 'dashboard' && <DashboardView isConnected={isConnected} />}
+        {currentView === 'history' && <HealthHistoryView refreshInterval={60000} />}
       </div>
     </div>
   );

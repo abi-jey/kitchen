@@ -1,9 +1,9 @@
 // Sidebar navigation component
 
 import React from 'react';
-import { Network, LayoutDashboard, Server, Settings, Activity } from 'lucide-react';
+import { Network, LayoutDashboard, Settings, Activity } from 'lucide-react';
 
-export type ViewType = 'graph' | 'dashboard';
+export type ViewType = 'graph' | 'dashboard' | 'history';
 
 interface SidebarProps {
   currentView: ViewType;
@@ -49,7 +49,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
         <div className="nav-section">
           <div className="nav-section-title">Monitoring</div>
-          <button className="nav-item" disabled>
+          <button
+            className={`nav-item ${currentView === 'history' ? 'active' : ''}`}
+            onClick={() => onViewChange('history')}
+          >
             <Activity size={18} />
             <span>Health History</span>
           </button>

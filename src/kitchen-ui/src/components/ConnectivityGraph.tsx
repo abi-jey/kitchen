@@ -3,10 +3,10 @@
 
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import * as d3 from 'd3';
-import { Loader, Network, RefreshCw, X, Server, Cpu, HardDrive, History, CheckCircle, XCircle, Clock } from 'lucide-react';
-import { getConnectivityGraph, getNodeConnectivityHistory } from '../api/client';
-import type { ConnectivityGraph, GraphNode as ApiGraphNode, GraphEdge, ConnectivityRecord } from '../types';
-import { formatLatency, formatTimeAgo } from '../types';
+import { Loader, Network, RefreshCw, X, Server, Cpu, HardDrive } from 'lucide-react';
+import { getConnectivityGraph } from '../api/client';
+import type { ConnectivityGraph, GraphNode as ApiGraphNode, GraphEdge } from '../types';
+import { formatLatency } from '../types';
 
 // Node dimensions for edge calculations
 const NODE_WIDTH = 160;
@@ -52,36 +52,11 @@ export const ConnectivityGraphView: React.FC<ConnectivityGraphViewProps> = ({
 }) => {
   const [graphData, setGraphData] = useState<ConnectivityGraph | null>(null);
   const [selectedNode, setSelectedNode] = useState<SelectedNodeInfo | null>(null);
-  const [connectivityHistory, setConnectivityHistory] = useState<ConnectivityRecord[]>([]);
-  const [historyLoading, setHistoryLoading] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const svgRef = useRef<SVGSVGElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const simulationRef = useRef<d3.Simulation<D3Node, undefined> | null>(null);
-
-  // Fetch connectivity history when a node is selected
-  useEffect(() => {
-    if (!selectedNode) {
-      setConnectivityHistory([]);
-      return;
-    }
-    
-    const fetchHistory = async () => {
-      setHistoryLoading(true);
-      try {
-        const history = await getNodeConnectivityHistory(selectedNode.id, { limit: 100 });
-        setConnectivityHistory(history);
-      } catch (err) {
-        console.error('Failed to fetch connectivity history:', err);
-        setConnectivityHistory([]);
-      } finally {
-        setHistoryLoading(false);
-      }
-    };
-    
-    fetchHistory();
-  }, [selectedNode?.id]);
 
   // Close sidebar on Escape key
   useEffect(() => {
@@ -751,69 +726,6 @@ export const ConnectivityGraphView: React.FC<ConnectivityGraphViewProps> = ({
                 )}
               </div>
             )}
-
-            <div className="sidebar-section health-history">
-              <h4>
-                <History size={14} />
-                Health History
-              </h4>
-              {historyLoading ? (
-                <div className="history-loading">Loading history...</div>
-              ) : connectivityHistory.length === 0 ? (
-                <div className="history-empty">No connectivity records found</div>
-              ) : (
-                <div className="history-list">
-                  {connectivityHistory.map((record) => (
-                    <div key={record.id} className={`history-record ${record.success ? 'success' : 'failure'}`}>
-                      <div className="record-header">
-                        <span className="record-status">
-                          {record.success ? <CheckCircle size={12} /> : <XCircle size={12} />}
-                          {record.success ? 'Success' : 'Failed'}
-                        </span>
-                        <span className="record-time">
-                          <Clock size={12} />
-                          {formatTimeAgo(record.measured_at)}
-                        </span>
-                      </div>
-                      <div className="record-details">
-                        <div className="record-field">
-                          <span className="field-label">From:</span>
-                          <span className="field-value">{record.source_node}</span>
-                        </div>
-                        <div className="record-field">
-                          <span className="field-label">Target IP:</span>
-                          <span className="field-value">{record.target_ip}</span>
-                        </div>
-                        {record.latency_ms !== null && record.latency_ms !== undefined && (
-                          <div className="record-field">
-                            <span className="field-label">Latency:</span>
-                            <span className="field-value">{formatLatency(record.latency_ms)}</span>
-                          </div>
-                        )}
-                        {record.packet_loss !== null && record.packet_loss !== undefined && (
-                          <div className="record-field">
-                            <span className="field-label">Packet Loss:</span>
-                            <span className="field-value">{record.packet_loss.toFixed(1)}%</span>
-                          </div>
-                        )}
-                        {record.error_message && (
-                          <div className="record-field error">
-                            <span className="field-label">Error:</span>
-                            <span className="field-value">{record.error_message}</span>
-                          </div>
-                        )}
-                        {record.ping_count && (
-                          <div className="record-field">
-                            <span className="field-label">Ping Count:</span>
-                            <span className="field-value">{record.ping_count}</span>
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
           </div>
         </div>
       )}
