@@ -32,14 +32,11 @@ interface ClusterNodeData {
 
 // Custom node component showing hostname and IP
 const ClusterNode: React.FC<NodeProps<Node<ClusterNodeData>>> = ({ data }) => {
-  const isHub = data.type === 'hub';
-  const statusColor = isHub
-    ? 'var(--accent)'
-    : data.ready
-      ? 'var(--success)'
-      : data.status !== 'Ready'
-        ? 'var(--warning)'
-        : 'var(--error)';
+  const statusColor = data.ready
+    ? 'var(--success)'
+    : data.status !== 'Ready'
+      ? 'var(--warning)'
+      : 'var(--error)';
 
   return (
     <div
@@ -47,18 +44,21 @@ const ClusterNode: React.FC<NodeProps<Node<ClusterNodeData>>> = ({ data }) => {
       style={{
         background: 'var(--bg-card)',
         border: `2px solid ${statusColor}`,
-        borderRadius: isHub ? '12px' : '8px',
-        padding: isHub ? '16px 20px' : '12px 16px',
-        minWidth: isHub ? '140px' : '120px',
+        borderRadius: '8px',
+        padding: '12px 16px',
+        minWidth: '120px',
         textAlign: 'center',
         boxShadow: 'var(--shadow)',
       }}
     >
-      <Handle type="target" position={Position.Top} style={{ visibility: 'hidden' }} />
+      {/* Left side handles for incoming */}
+      <Handle type="target" position={Position.Left} id="left" style={{ visibility: 'hidden' }} />
+      {/* Right side handles for outgoing */}
+      <Handle type="source" position={Position.Right} id="right" style={{ visibility: 'hidden' }} />
       <div
         style={{
           fontWeight: 600,
-          fontSize: isHub ? '14px' : '13px',
+          fontSize: '13px',
           color: 'var(--text-primary)',
           marginBottom: '4px',
         }}
@@ -72,9 +72,8 @@ const ClusterNode: React.FC<NodeProps<Node<ClusterNodeData>>> = ({ data }) => {
           fontFamily: 'monospace',
         }}
       >
-        {isHub ? 'Hub' : data.ip || 'No IP'}
+        {data.ip || 'No IP'}
       </div>
-      <Handle type="source" position={Position.Bottom} style={{ visibility: 'hidden' }} />
     </div>
   );
 };
@@ -159,17 +158,29 @@ export const ConnectivityGraphView: React.FC<ConnectivityGraphViewProps> = ({
     });
 
     // Only show edges between actual nodes (filter out hub edges)
-    const flowEdges: FlowEdge[] = graphData.edges
-      .filter((edge) => edge.source !== 'node-manager' && edge.target !== 'node-manager')
-      .map((edge) => {
+    const filteredEdges = graphData.edges
+      .filter((edge) => edge.source !== 'node-manager' && edge.target !== 'node-manager');
+    
+    // Create parallel edges for bidirectional connections
+    const flowEdges: FlowEdge[] = filteredEdges.map((edge, index) => {
       const isSuccess = edge.success;
       const hasMeasurement = edge.measured_at !== null;
+      
+      // Check if there's a reverse edge (bidirectional)
+      const hasReverseEdge = filteredEdges.some(
+        (e) => e.source === edge.target && e.target === edge.source
+      );
+      
+      // Determine if this edge should use top or bottom offset
+      const isFirstDirection = edge.source < edge.target;
 
       return {
         id: `${edge.source}-${edge.target}`,
         source: edge.source,
         target: edge.target,
-        type: 'default',
+        sourceHandle: 'right',
+        targetHandle: 'left',
+        type: 'straight',
         animated: !isSuccess && hasMeasurement,
         style: {
           stroke: !hasMeasurement
@@ -179,6 +190,10 @@ export const ConnectivityGraphView: React.FC<ConnectivityGraphViewProps> = ({
               : 'var(--error)',
           strokeWidth: 2,
           strokeDasharray: !hasMeasurement ? '4 4' : isSuccess ? undefined : '6 3',
+          // Offset for parallel lines
+          ...(hasReverseEdge && {
+            transform: isFirstDirection ? 'translateY(-8px)' : 'translateY(8px)',
+          }),
         },
         label: hasMeasurement
           ? isSuccess
@@ -205,8 +220,8 @@ export const ConnectivityGraphView: React.FC<ConnectivityGraphViewProps> = ({
             : isSuccess
               ? 'var(--success)'
               : 'var(--error)',
-          width: 15,
-          height: 15,
+          width: 12,
+          height: 12,
         },
       };
     });
