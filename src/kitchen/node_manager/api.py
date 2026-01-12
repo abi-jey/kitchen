@@ -93,6 +93,7 @@ class NodeStats(BaseModel):
 
 class ConnectivitySummary(BaseModel):
     """Latest connectivity status for a node."""
+    source_node: str = "node-manager"
     node_name: str
     target_ip: str
     success: bool
@@ -117,6 +118,35 @@ class NodeWithConnectivity(BaseModel):
     last_seen_at: datetime
     unavailable_since: Optional[datetime] = None
     connectivity: Optional[ConnectivitySummary] = None
+
+
+class GraphNode(BaseModel):
+    """Node representation for graph visualization."""
+    id: str
+    label: str
+    type: str  # 'hub' or 'node'
+    status: str  # 'healthy', 'degraded', 'unreachable', 'unknown'
+    ready: bool
+    ip: Optional[str] = None
+    kubelet_version: Optional[str] = None
+    cpu_capacity: Optional[str] = None
+    memory_capacity: Optional[str] = None
+
+
+class GraphEdge(BaseModel):
+    """Edge representing connectivity between nodes."""
+    source: str
+    target: str
+    latency_ms: Optional[float] = None
+    success: bool
+    packet_loss: Optional[float] = None
+    measured_at: datetime
+
+
+class ConnectivityGraph(BaseModel):
+    """Full graph data for visualization."""
+    nodes: List[GraphNode]
+    edges: List[GraphEdge]
 
 
 worker: Optional[NodeMonitorWorker] = None  # Global reference for handlers
@@ -602,6 +632,87 @@ async def get_stats(db: AsyncSession = Depends(get_db_session)) -> NodeStats:
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# Pydantic models for agent connectivity reports
+class ConnectivityMeasurement(BaseModel):
+    """Single connectivity measurement from an agent."""
+    target_node: str
+    target_ip: str
+    success: bool
+    latency_ms: Optional[float] = None
+    packet_loss: Optional[float] = None
+    error_message: Optional[str] = None
+    measured_at: str  # ISO format string
+
+
+class ConnectivityReport(BaseModel):
+    """Connectivity report from a node agent."""
+    source_node: str
+    measurements: List[ConnectivityMeasurement]
+
+
+class ConnectivityReportResponse(BaseModel):
+    """Response to a connectivity report."""
+    accepted: int
+    rejected: int
+    message: str
+
+
+@app.post("/connectivity/report", response_model=ConnectivityReportResponse)
+async def report_connectivity(
+    report: ConnectivityReport,
+    db: AsyncSession = Depends(get_db_session)
+) -> ConnectivityReportResponse:
+    """Receive connectivity measurements from node agents.
+    
+    This endpoint is called by the node-agent DaemonSet running on each node
+    to report node-to-node ping measurements.
+    """
+    try:
+        accepted = 0
+        rejected = 0
+        
+        for measurement in report.measurements:
+            try:
+                # Parse the timestamp
+                try:
+                    measured_at = datetime.fromisoformat(measurement.measured_at.replace('Z', '+00:00'))
+                except ValueError:
+                    measured_at = datetime.now(timezone.utc)
+                
+                # Create connectivity record
+                record = NodeConnectivity(
+                    node_name=measurement.target_node,
+                    target_ip=measurement.target_ip,
+                    source_node=report.source_node,
+                    success=measurement.success,
+                    latency_ms=measurement.latency_ms,
+                    packet_loss=measurement.packet_loss,
+                    error_message=measurement.error_message,
+                    ping_count=4,  # Default, agent doesn't report this
+                    measured_at=measured_at,
+                )
+                db.add(record)
+                accepted += 1
+                
+            except Exception as e:
+                logger.warning(f"Failed to process measurement for {measurement.target_node}: {e}")
+                rejected += 1
+        
+        await db.commit()
+        
+        logger.info(f"Received connectivity report from {report.source_node}: {accepted} accepted, {rejected} rejected")
+        
+        return ConnectivityReportResponse(
+            accepted=accepted,
+            rejected=rejected,
+            message=f"Processed {accepted + rejected} measurements from {report.source_node}",
+        )
+        
+    except Exception as e:
+        logger.error(f"Failed to process connectivity report: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/")
 async def root():
     """Root endpoint with basic information."""
@@ -615,8 +726,11 @@ async def root():
             "nodes_dashboard": "/nodes/dashboard",
             "node_detail": "/nodes/{node_name}",
             "connectivity": "/nodes/{node_name}/connectivity",
+            "connectivity_report": "/connectivity/report",
             "connectivity_latest": "/connectivity/latest",
+            "connectivity_graph": "/connectivity/graph",
             "stats": "/stats",
+            "websocket": "/ws",
         }
     }
 
@@ -656,6 +770,7 @@ async def get_latest_connectivity(
         
         return [
             ConnectivitySummary(
+                source_node=getattr(r, 'source_node', 'node-manager'),
                 node_name=r.node_name,
                 target_ip=r.target_ip,
                 success=r.success,
@@ -668,6 +783,101 @@ async def get_latest_connectivity(
         
     except Exception as e:
         logger.error(f"Failed to get latest connectivity: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/connectivity/graph", response_model=ConnectivityGraph)
+async def get_connectivity_graph(
+    db: AsyncSession = Depends(get_db_session)
+) -> ConnectivityGraph:
+    """Get connectivity data in graph format for visualization."""
+    try:
+        from sqlalchemy import and_
+        
+        # Get all nodes
+        nodes_stmt = select(NodeSnapshot).order_by(NodeSnapshot.name)
+        nodes_result = await db.execute(nodes_stmt)
+        nodes = nodes_result.scalars().all()
+        
+        # Build graph nodes
+        graph_nodes: List[GraphNode] = []
+        
+        # Add the node-manager as the central hub
+        graph_nodes.append(GraphNode(
+            id="node-manager",
+            label="Node Manager",
+            type="hub",
+            status="healthy",
+            ready=True,
+            ip=None,
+            kubelet_version=None,
+            cpu_capacity=None,
+            memory_capacity=None,
+        ))
+        
+        # Add cluster nodes
+        for node in nodes:
+            # Determine status
+            if node.unavailable_since:
+                status = "unreachable"
+            elif not node.ready:
+                status = "degraded"
+            else:
+                status = "healthy"
+            
+            graph_nodes.append(GraphNode(
+                id=node.name,
+                label=node.name,
+                type="node",
+                status=status,
+                ready=node.ready,
+                ip=node.tailscale_ip or node.internal_ip,
+                kubelet_version=node.kubelet_version,
+                cpu_capacity=node.cpu_capacity,
+                memory_capacity=node.memory_capacity,
+            ))
+        
+        # Get latest connectivity for edges
+        subq = (
+            select(
+                NodeConnectivity.node_name,
+                func.max(cast(Any, NodeConnectivity.measured_at)).label("max_at")
+            )
+            .group_by(NodeConnectivity.node_name)
+            .subquery()
+        )
+        
+        conn_stmt = (
+            select(NodeConnectivity)
+            .join(
+                subq,
+                and_(
+                    NodeConnectivity.node_name == subq.c.node_name,
+                    cast(Any, NodeConnectivity.measured_at) == subq.c.max_at
+                )
+            )
+        )
+        
+        conn_result = await db.execute(conn_stmt)
+        connectivity_records = conn_result.scalars().all()
+        
+        # Build edges from node-manager to each node
+        graph_edges: List[GraphEdge] = []
+        for conn in connectivity_records:
+            source = getattr(conn, 'source_node', 'node-manager')
+            graph_edges.append(GraphEdge(
+                source=source,
+                target=conn.node_name,
+                latency_ms=conn.latency_ms,
+                success=conn.success,
+                packet_loss=conn.packet_loss,
+                measured_at=conn.measured_at,
+            ))
+        
+        return ConnectivityGraph(nodes=graph_nodes, edges=graph_edges)
+        
+    except Exception as e:
+        logger.error(f"Failed to get connectivity graph: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

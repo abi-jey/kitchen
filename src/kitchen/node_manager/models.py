@@ -56,14 +56,17 @@ class NodeSnapshot(SQLModel, table=True):
 
 
 class NodeConnectivity(SQLModel, table=True):
-    """Records connectivity measurements to nodes via direct ping.
+    """Records connectivity measurements between nodes via direct ping.
     
     Tracks round-trip latency and connection success/failure over time.
+    source_node is where the ping originates from (e.g., 'node-manager' or a node name).
+    node_name is the target node being pinged.
     """
     __tablename__ = "node_connectivity"
     
     id: Optional[int] = Field(default=None, primary_key=True)
-    node_name: str = Field(max_length=255, index=True)
+    source_node: str = Field(default="node-manager", max_length=255, index=True)  # Where ping originates
+    node_name: str = Field(max_length=255, index=True)  # Target node
     target_ip: str = Field(max_length=45)  # IP used for ping
     
     # Connectivity measurement
@@ -84,4 +87,4 @@ class NodeConnectivity(SQLModel, table=True):
     
     def __repr__(self) -> str:
         status = f"{self.latency_ms}ms" if self.success else "failed"
-        return f"<NodeConnectivity(node='{self.node_name}', target='{self.target_ip}', status='{status}')>"
+        return f"<NodeConnectivity(source='{self.source_node}', target='{self.node_name}', status='{status}')>"

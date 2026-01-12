@@ -8,7 +8,8 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}/node-manager
+  SERVER_IMAGE: ${{ github.repository }}/node-manager-server
+  AGENT_IMAGE: ${{ github.repository }}/node-agent
 
 jobs:
   build-and-push:
@@ -39,22 +40,42 @@ jobs:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
 
-    - name: Extract metadata
-      id: meta
+    - name: Extract server metadata
+      id: server-meta
       uses: docker/metadata-action@v5
       with:
-        images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+        images: ${{ env.REGISTRY }}/${{ env.SERVER_IMAGE }}
         tags: |
           type=ref,event=branch
           type=ref,event=pr
           type=sha,prefix=main-
           type=raw,value=latest,enable={{is_default_branch}}
 
-    - name: Build and push Docker image
+    - name: Extract agent metadata
+      id: agent-meta
+      uses: docker/metadata-action@v5
+      with:
+        images: ${{ env.REGISTRY }}/${{ env.AGENT_IMAGE }}
+        tags: |
+          type=ref,event=branch
+          type=ref,event=pr
+          type=sha,prefix=main-
+          type=raw,value=latest,enable={{is_default_branch}}
+
+    - name: Build and push server image
       uses: docker/build-push-action@v5
       with:
         context: .
-        file: ./dockerfiles/node-manager/Dockerfile
+        file: ./dockerfiles/node-manager/Dockerfile.server
         push: ${{ github.event_name != 'pull_request' }}
-        tags: ${{ steps.meta.outputs.tags }}
-        labels: ${{ steps.meta.outputs.labels }}
+        tags: ${{ steps.server-meta.outputs.tags }}
+        labels: ${{ steps.server-meta.outputs.labels }}
+
+    - name: Build and push agent image
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        file: ./dockerfiles/node-manager/Dockerfile.agent
+        push: ${{ github.event_name != 'pull_request' }}
+        tags: ${{ steps.agent-meta.outputs.tags }}
+        labels: ${{ steps.agent-meta.outputs.labels }}

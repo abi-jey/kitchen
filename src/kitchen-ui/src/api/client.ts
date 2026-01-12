@@ -8,7 +8,8 @@ import type {
   NodeDetail,
   ConnectivityRecord,
   ConnectivitySummary,
-} from './types';
+  ConnectivityGraph,
+} from '../types';
 
 const API_BASE = '';
 
@@ -47,6 +48,10 @@ export async function getNodeConnectivity(
 
 export async function getLatestConnectivity(): Promise<ConnectivitySummary[]> {
   return fetchJson<ConnectivitySummary[]>('/connectivity/latest');
+}
+
+export async function getConnectivityGraph(): Promise<ConnectivityGraph> {
+  return fetchJson<ConnectivityGraph>('/connectivity/graph');
 }
 
 // Polling hook data types

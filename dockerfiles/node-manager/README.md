@@ -5,19 +5,59 @@ A FastAPI service for monitoring Kubernetes nodes and their network connectivity
 ## Features
 
 - **Node Monitoring**: Periodically fetches all Kubernetes nodes and tracks their status
-- **Connectivity Checking**: Measures round-trip latency via direct ping
+- **Connectivity Checking**: Node-to-node connectivity via agents running on each node
 - **REST API**: Provides endpoints for querying node status and connectivity metrics
+- **Web UI**: Interactive dashboard with connectivity graph visualization
 - **Database Storage**: Stores node snapshots and connectivity records in PostgreSQL
 - **High Availability**: Designed for deployment with HPA and pod disruption budgets
 
 ## Architecture
 
-The node manager consists of:
+The node manager has a split architecture with two container images:
 
-1. **FastAPI Application**: REST API endpoints for querying data
-2. **Background Worker**: Async tasks for monitoring nodes and connectivity  
-3. **PostgreSQL Database**: Persistent storage for metrics and node data
-4. **Kubernetes Integration**: Service account with RBAC for reading nodes
+### 1. Server (`node-manager-server`)
+- **FastAPI Application**: REST API endpoints for querying data
+- **Web UI**: React-based dashboard for visualizing node connectivity
+- **Background Worker**: Async tasks for monitoring nodes from Kubernetes API
+- **WebSocket**: Live updates to connected UI clients
+- **Runs as**: Kubernetes Deployment (1-5 replicas)
+- **Image**: `ghcr.io/abi-jey/kitchen/node-manager-server`
+
+### 2. Agent (`node-agent`)
+- **Lightweight Python Agent**: Minimal footprint (~20MB image)
+- **Node-to-Node Pinging**: Pings all other nodes from its host
+- **Reports to Server**: Sends connectivity measurements to the server API
+- **Runs as**: Kubernetes DaemonSet (one per node)
+- **Image**: `ghcr.io/abi-jey/kitchen/node-agent`
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                     Kubernetes Cluster                          │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  ┌──────────────────┐    ┌──────────────────┐                  │
+│  │  Server Pod #1   │    │  Server Pod #2   │  (Deployment)    │
+│  │  - API + UI      │    │  - API + UI      │                  │
+│  │  - K8s watcher   │    │  - K8s watcher   │                  │
+│  └────────┬─────────┘    └────────┬─────────┘                  │
+│           │                       │                             │
+│           └───────────┬───────────┘                             │
+│                       │                                         │
+│              ┌────────▼────────┐                               │
+│              │   PostgreSQL    │                               │
+│              └─────────────────┘                               │
+│                       ▲                                         │
+│                       │ POST /connectivity/report               │
+│  ┌────────────────────┼────────────────────────┐               │
+│  │                    │                        │   (DaemonSet) │
+│  ▼                    ▼                        ▼               │
+│ ┌──────────┐    ┌──────────┐    ┌──────────┐                   │
+│ │ Agent    │    │ Agent    │    │ Agent    │                   │
+│ │ (node-1) │◄──►│ (node-2) │◄──►│ (node-3) │  ← ping each other│
+│ └──────────┘    └──────────┘    └──────────┘                   │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+```
 
 ## Deployment
 
@@ -38,26 +78,43 @@ The node manager consists of:
    kubectl apply -f k8s-manifests.yaml
    ```
 
-3. **Docker image is automatically built and pushed via GitHub Actions**:
-   - Image location: `ghcr.io/abi-jey/kitchen/node-manager:latest`
-   - Tagged with commit hash on each push to main branch
+3. **Docker images are automatically built and pushed via GitHub Actions**:
+   - Server: `ghcr.io/abi-jey/kitchen/node-manager-server:latest`
+   - Agent: `ghcr.io/abi-jey/kitchen/node-agent:latest`
    
-   # Update image in deployment
-   kubectl set image deployment/node-manager node-manager=ghcr.io/abi-jey/kitchen/node-manager:latest -n kitchen-system
+   ```bash
+   # Update images in deployment
+   kubectl set image deployment/node-manager-server \
+     node-manager-server=ghcr.io/abi-jey/kitchen/node-manager-server:latest \
+     -n kitchen-system
+   
+   kubectl set image daemonset/node-agent \
+     node-agent=ghcr.io/abi-jey/kitchen/node-agent:latest \
+     -n kitchen-system
    ```
 
 ### Configuration
 
-Key configuration options via ConfigMap and Secret:
+#### Server Configuration (via ConfigMap/Secret)
 
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `MONITORING_INTERVAL` | Node monitoring frequency (seconds) | 60 |
-| `CONNECTIVITY_INTERVAL` | Ping frequency (seconds) | 300 |
+| `CONNECTIVITY_INTERVAL` | Server-side ping frequency (seconds) | 300 |
 | `PING_COUNT` | Ping packets per check | 4 |
 | `PING_TIMEOUT` | Ping timeout (seconds) | 5 |
 | `DATABASE_URL` | PostgreSQL connection string | Required |
 | `LOG_LEVEL` | Application log level | INFO |
+
+#### Agent Configuration (via ConfigMap)
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `NODE_MANAGER_API_URL` | URL of the server API | `http://node-manager.kitchen-system.svc:8000` |
+| `REPORT_INTERVAL` | How often to report connectivity (seconds) | 60 |
+| `PING_COUNT` | Ping packets per check | 4 |
+| `PING_TIMEOUT` | Ping timeout (seconds) | 5 |
+| `LOG_LEVEL` | Agent log level | INFO |
 
 ### Database Schema
 

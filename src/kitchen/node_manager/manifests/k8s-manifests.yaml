@@ -8,7 +8,7 @@ metadata:
     name: kitchen-system
 
 ---
-# ConfigMap for node manager configuration
+# ConfigMap for node manager server configuration
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -29,6 +29,20 @@ data:
   
   # Database configuration (will be overridden by secret)
   DATABASE_URL: "postgresql+asyncpg://postgres:postgres@postgres:5432/kitchen_node_manager"
+
+---
+# ConfigMap for node agent configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: node-agent-config
+  namespace: kitchen-system
+data:
+  NODE_MANAGER_API_URL: "http://node-manager.kitchen-system.svc:8000"
+  REPORT_INTERVAL: "60"
+  PING_COUNT: "4"
+  PING_TIMEOUT: "5"
+  LOG_LEVEL: "INFO"
 
 ---
 # Secret for database credentials and sensitive config
@@ -93,7 +107,7 @@ metadata:
   name: node-manager
   namespace: kitchen-system
   labels:
-    app: node-manager
+    app: node-manager-server
 spec:
   type: ClusterIP
   ports:
@@ -102,39 +116,30 @@ spec:
     protocol: TCP
     name: http
   selector:
-    app: node-manager
+    app: node-manager-server
 
 ---
-# Deployment for node manager
+# Deployment for node manager server (API + UI)
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: node-manager
+  name: node-manager-server
   namespace: kitchen-system
   labels:
-    app: node-manager
+    app: node-manager-server
     version: {{node_manager_version}}
 spec:
   replicas: 2
   selector:
     matchLabels:
-      app: node-manager
+      app: node-manager-server
   template:
     metadata:
       labels:
-        app: node-manager
+        app: node-manager-server
         version: {{node_manager_version}}
     spec:
       serviceAccountName: node-manager
-      
-      # Tolerate any taints (runs on any node)
-      tolerations:
-      - operator: "Exists"
-        effect: "NoSchedule"
-      - operator: "Exists"
-        effect: "NoExecute"
-      - operator: "Exists"
-        effect: "PreferNoSchedule"
       
       # Anti-affinity to spread across nodes
       affinity:
@@ -147,12 +152,12 @@ spec:
                 - key: app
                   operator: In
                   values:
-                  - node-manager
+                  - node-manager-server
               topologyKey: kubernetes.io/hostname
       
       containers:
-      - name: node-manager
-        image: ghcr.io/abi-jey/kitchen/node-manager:latest
+      - name: node-manager-server
+        image: ghcr.io/abi-jey/kitchen/node-manager-server:latest
         imagePullPolicy: Always
         
         # Security context for container - add CAP_NET_RAW for ping
@@ -221,17 +226,85 @@ spec:
         fsGroup: 1000
 
 ---
-# HorizontalPodAutoscaler
+# DaemonSet for node agent (runs on every node)
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: node-agent
+  namespace: kitchen-system
+  labels:
+    app: node-agent
+    version: {{node_manager_version}}
+spec:
+  selector:
+    matchLabels:
+      app: node-agent
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+  template:
+    metadata:
+      labels:
+        app: node-agent
+        version: {{node_manager_version}}
+    spec:
+      # Tolerate any taints (runs on ALL nodes including masters)
+      tolerations:
+      - operator: "Exists"
+        effect: "NoSchedule"
+      - operator: "Exists"
+        effect: "NoExecute"
+      - operator: "Exists"
+        effect: "PreferNoSchedule"
+      
+      # Use host network to get accurate node-to-node connectivity
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      
+      containers:
+      - name: node-agent
+        image: ghcr.io/abi-jey/kitchen/node-agent:latest
+        imagePullPolicy: Always
+        
+        securityContext:
+          capabilities:
+            add:
+            - NET_RAW
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+        
+        envFrom:
+        - configMapRef:
+            name: node-agent-config
+        env:
+        - name: NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+        
+        resources:
+          requests:
+            memory: "32Mi"
+            cpu: "10m"
+          limits:
+            memory: "64Mi"
+            cpu: "50m"
+      
+      restartPolicy: Always
+
+---
+# HorizontalPodAutoscaler for server
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:
-  name: node-manager-hpa
+  name: node-manager-server-hpa
   namespace: kitchen-system
 spec:
   scaleTargetRef:
     apiVersion: apps/v1
     kind: Deployment
-    name: node-manager
+    name: node-manager-server
   minReplicas: 1
   maxReplicas: 5
   metrics:
@@ -262,29 +335,29 @@ spec:
         periodSeconds: 60
 
 ---
-# PodDisruptionBudget - ensure at least 1 pod is always available
+# PodDisruptionBudget for server - ensure at least 1 pod is always available
 apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
-  name: node-manager-pdb
+  name: node-manager-server-pdb
   namespace: kitchen-system
 spec:
   minAvailable: 1
   selector:
     matchLabels:
-      app: node-manager
+      app: node-manager-server
 
 ---
-# NetworkPolicy (optional) - allows ingress on port 8000
+# NetworkPolicy for server - allows ingress on port 8000
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: node-manager-netpol
+  name: node-manager-server-netpol
   namespace: kitchen-system
 spec:
   podSelector:
     matchLabels:
-      app: node-manager
+      app: node-manager-server
   policyTypes:
   - Ingress
   - Egress
@@ -294,4 +367,20 @@ spec:
     - protocol: TCP
       port: 8000
   egress:
-  - {}  # Allow all egress (needed for K8s API, DB, Tailscale)
+  - {}  # Allow all egress (needed for K8s API, DB)
+
+---
+# NetworkPolicy for agent - only egress to server
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: node-agent-netpol
+  namespace: kitchen-system
+spec:
+  podSelector:
+    matchLabels:
+      app: node-agent
+  policyTypes:
+  - Egress
+  egress:
+  - {}  # Allow all egress (needed for pinging nodes and API calls)

@@ -24,11 +24,39 @@ export interface NodeStats {
 
 export interface ConnectivitySummary {
   node_name: string;
+  source_node: string;
   target_ip: string;
   success: boolean;
   latency_ms: number | null;
   packet_loss: number | null;
   measured_at: string;
+}
+
+// Graph types for connectivity visualization
+export interface GraphNode {
+  id: string;
+  label: string;
+  type: 'hub' | 'node';
+  status: string;
+  ready: boolean;
+  ip: string | null;
+  kubelet_version: string | null;
+  cpu_capacity: string | null;
+  memory_capacity: string | null;
+}
+
+export interface GraphEdge {
+  source: string;
+  target: string;
+  latency_ms: number | null;
+  success: boolean;
+  packet_loss: number | null;
+  measured_at: string | null;
+}
+
+export interface ConnectivityGraph {
+  nodes: GraphNode[];
+  edges: GraphEdge[];
 }
 
 export interface NodeSummary {

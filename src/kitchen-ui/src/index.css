@@ -3,7 +3,9 @@
 
 @import './styles/variables.css';
 @import './styles/layout.css';
+@import './styles/sidebar.css';
 @import './styles/header.css';
 @import './styles/stats.css';
 @import './styles/node-card.css';
 @import './styles/detail-panel.css';
+@import './styles/graph.css';
