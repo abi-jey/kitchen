@@ -20,12 +20,6 @@ const App: React.FC = () => {
         {currentView === 'graph' && <ConnectivityGraphView refreshInterval={30000} />}
         {currentView === 'dashboard' && <DashboardView isConnected={isConnected} />}
       </div>
-
-      <footer className="app-footer">
-        <span>Kitchen Node Manager</span>
-        <span className="footer-sep">•</span>
-        <span>Auto-refresh: 30s</span>
-      </footer>
     </div>
   );
 };
