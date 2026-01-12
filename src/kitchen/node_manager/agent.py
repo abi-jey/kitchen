@@ -19,12 +19,17 @@ from typing import Dict, Any, List, Optional
 
 import aiohttp
 
-# Configure logging
+# Configure logging with immediate flush
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO").upper(),
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    force=True
 )
 logger = logging.getLogger("node-agent")
+# Force immediate log output
+import sys
+for handler in logging.root.handlers:
+    handler.flush = sys.stdout.flush
 
 
 class NodeAgent:
@@ -105,6 +110,18 @@ class NodeAgent:
                     result["target_node"] = node["name"]
                     result["target_ip"] = target_ip
                     results.append(result)
+                    
+                    # Log ping failures immediately
+                    if not result.get("success"):
+                        logger.warning(
+                            f"Ping FAILED: {self.node_name} -> {node['name']} ({target_ip}): "
+                            f"{result.get('error_message', 'unknown error')}"
+                        )
+                    else:
+                        logger.debug(
+                            f"Ping OK: {self.node_name} -> {node['name']} ({target_ip}): "
+                            f"{result.get('latency_ms', 0):.1f}ms"
+                        )
                 
                 # Report results to API
                 if results:
@@ -176,11 +193,12 @@ class NodeAgent:
                     await process.wait()
                 except:
                     pass
+                logger.error(f"Ping timeout to {target_ip} ({node_name})")
                 return {
                     "success": False,
                     "latency_ms": None,
                     "packet_loss": 100.0,
-                    "error_message": f"Ping timeout",
+                    "error_message": f"Ping timeout after {self.ping_timeout}s",
                     "measured_at": start_time.isoformat(),
                 }
             
@@ -192,6 +210,7 @@ class NodeAgent:
             )
             
         except FileNotFoundError:
+            logger.error(f"ping command not found in PATH")
             return {
                 "success": False,
                 "latency_ms": None,
@@ -200,6 +219,7 @@ class NodeAgent:
                 "measured_at": start_time.isoformat(),
             }
         except Exception as e:
+            logger.error(f"Ping exception for {target_ip} ({node_name}): {e}")
             return {
                 "success": False,
                 "latency_ms": None,
@@ -218,6 +238,7 @@ class NodeAgent:
         """Parse ping command output."""
         if return_code != 0:
             error_msg = stderr.strip() or stdout.strip() or f"Exit code {return_code}"
+            logger.debug(f"Ping non-zero exit: {return_code}, stderr: {stderr[:100]}")
             return {
                 "success": False,
                 "latency_ms": None,
