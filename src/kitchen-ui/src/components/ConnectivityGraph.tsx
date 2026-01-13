@@ -22,7 +22,10 @@ interface D3Node extends ApiGraphNode {
 }
 
 // D3 Edge type
+// sourceId/targetId store original string IDs (D3 force mutates source/target to objects)
 interface D3Edge extends GraphEdge {
+  sourceId: string;
+  targetId: string;
   sourceNode?: D3Node;
   targetNode?: D3Node;
 }
@@ -138,6 +141,18 @@ export const ConnectivityGraphView: React.FC<ConnectivityGraphViewProps> = ({
     return { sx: sourceX, sy: sourceY, tx: targetX, ty: targetY };
   };
 
+  // Calculate point on cubic bezier curve at parameter t (0-1)
+  const bezierPoint = (
+    t: number,
+    p0: number,
+    p1: number,
+    p2: number,
+    p3: number
+  ): number => {
+    const mt = 1 - t;
+    return mt * mt * mt * p0 + 3 * mt * mt * t * p1 + 3 * mt * t * t * p2 + t * t * t * p3;
+  };
+
   // D3 Graph rendering
   useEffect(() => {
     if (!graphData || !svgRef.current || !containerRef.current) return;
@@ -162,13 +177,15 @@ export const ConnectivityGraphView: React.FC<ConnectivityGraphViewProps> = ({
       if (savedPos) {
         return { ...node, x: savedPos.x, y: savedPos.y, fx: savedPos.x, fy: savedPos.y, location: 'lab' };
       }
-      // Initial circular layout for new nodes
-      const angle = (2 * Math.PI * index) / clusterNodes.length - Math.PI / 2;
-      const radius = Math.min(width, height) * 0.3;
+      // Initial diagonal layout for new nodes - ensures curves look good from start
+      // Each node is placed diagonally so both X and Y differ, creating nice S-curves
+      const spacing = 250;
+      const startX = width / 2 - (clusterNodes.length - 1) * spacing / 2;
+      const startY = height / 2 - (clusterNodes.length - 1) * spacing / 2;
       return {
         ...node,
-        x: width / 2 + radius * Math.cos(angle),
-        y: height / 2 + radius * Math.sin(angle),
+        x: startX + index * spacing,
+        y: startY + index * spacing,
         location: 'lab',
       };
     });
@@ -176,12 +193,55 @@ export const ConnectivityGraphView: React.FC<ConnectivityGraphViewProps> = ({
     // Create node lookup map
     const nodeMap = new Map(d3Nodes.map((n) => [n.id, n]));
 
-    // Create D3 edges with node references
-    const d3Edges: D3Edge[] = filteredEdges.map((edge) => ({
-      ...edge,
-      sourceNode: nodeMap.get(edge.source),
-      targetNode: nodeMap.get(edge.target),
-    }));
+    // Create bidirectional edges for all cluster node pairs
+    // This ensures both directions always exist, even before ping data arrives
+    const edgeMap = new Map<string, GraphEdge>();
+    filteredEdges.forEach((edge) => {
+      edgeMap.set(`${edge.source}->${edge.target}`, edge);
+    });
+
+    // Generate all bidirectional edges between cluster nodes
+    const allBidirectionalEdges: D3Edge[] = [];
+    for (let i = 0; i < clusterNodes.length; i++) {
+      for (let j = i + 1; j < clusterNodes.length; j++) {
+        const nodeA = clusterNodes[i];
+        const nodeB = clusterNodes[j];
+        
+        // Edge A -> B
+        const keyAB = `${nodeA.id}->${nodeB.id}`;
+        const existingAB = edgeMap.get(keyAB);
+        allBidirectionalEdges.push({
+          source: nodeA.id,
+          target: nodeB.id,
+          sourceId: nodeA.id,  // Store original ID before D3 mutates
+          targetId: nodeB.id,
+          latency_ms: existingAB?.latency_ms ?? null,
+          success: existingAB?.success ?? false,
+          packet_loss: existingAB?.packet_loss ?? null,
+          measured_at: existingAB?.measured_at ?? null,
+          sourceNode: nodeMap.get(nodeA.id),
+          targetNode: nodeMap.get(nodeB.id),
+        });
+        
+        // Edge B -> A
+        const keyBA = `${nodeB.id}->${nodeA.id}`;
+        const existingBA = edgeMap.get(keyBA);
+        allBidirectionalEdges.push({
+          source: nodeB.id,
+          target: nodeA.id,
+          sourceId: nodeB.id,  // Store original ID before D3 mutates
+          targetId: nodeA.id,
+          latency_ms: existingBA?.latency_ms ?? null,
+          success: existingBA?.success ?? false,
+          packet_loss: existingBA?.packet_loss ?? null,
+          measured_at: existingBA?.measured_at ?? null,
+          sourceNode: nodeMap.get(nodeB.id),
+          targetNode: nodeMap.get(nodeA.id),
+        });
+      }
+    }
+    
+    const d3Edges = allBidirectionalEdges;
 
     // Setup zoom behavior with filter to ignore drags on nodes
     const zoom = d3.zoom<SVGSVGElement, unknown>()
@@ -235,7 +295,7 @@ export const ConnectivityGraphView: React.FC<ConnectivityGraphViewProps> = ({
     // Edge paths
     edges.append('path')
       .attr('class', (d) => {
-        if (d.measured_at && d.success) return 'edge-path flowing';
+        if (d.measured_at && d.success) return 'edge-path active';
         return 'edge-path';
       })
       .attr('fill', 'none')
@@ -246,7 +306,7 @@ export const ConnectivityGraphView: React.FC<ConnectivityGraphViewProps> = ({
       })
       .attr('stroke-dasharray', (d) => {
         if (!d.measured_at) return '4 4';
-        if (d.success) return '10 10';  // Flowing dash pattern
+        if (d.success) return '8 4';  // Flowing dash pattern
         return '6 3';
       })
       .attr('marker-end', (d) => {
@@ -440,105 +500,164 @@ export const ConnectivityGraphView: React.FC<ConnectivityGraphViewProps> = ({
       // Update node positions
       nodes.attr('transform', (d) => `translate(${d.x}, ${d.y})`);
 
-      // Update edge paths with smooth bezier curves
+      // Update edge paths with React Flow-style bezier curves
       edges.select('.edge-path')
         .attr('d', (d) => {
           if (!d.sourceNode || !d.targetNode) return '';
           
-          const points = getClosestPoints(d.sourceNode, d.targetNode);
+          const sx = d.sourceNode.x;
+          const sy = d.sourceNode.y;
+          const tx = d.targetNode.x;
+          const ty = d.targetNode.y;
           
-          // Check if there's a reverse edge (bidirectional)
+          // For cluster nodes, always assume bidirectional (they ping each other)
+          // Use sourceId/targetId (original strings) since D3 mutates source/target to objects
           const hasReverse = d3Edges.some(
-            (e) => e.source === d.target && e.target === d.source
-          );
+            (e) => e.sourceId === d.targetId && e.targetId === d.sourceId
+          ) || (d.sourceNode.type !== 'hub' && d.targetNode.type !== 'hub');
           
-          // Calculate edge length for curve intensity
-          const dx = points.tx - points.sx;
-          const dy = points.ty - points.sy;
-          const len = Math.sqrt(dx * dx + dy * dy);
+          // Use sourceId for comparison (D3 may have mutated source to object)
+          const isFirst = d.sourceId < d.targetId;
+          const sideOffset = hasReverse ? (isFirst ? 12 : -12) : 0;
           
-          // Always use smooth curves for a flowing appearance
-          // Curve offset based on edge length (more distance = more curve)
-          const curveIntensity = Math.min(len * 0.25, 50);
+          // Determine primary direction and which side to connect
+          const dx = tx - sx;
+          const dy = ty - sy;
+          const distance = Math.sqrt(dx * dx + dy * dy);
           
-          if (hasReverse) {
-            // Use offset curves for bidirectional edges
-            const isFirst = d.source < d.target;
-            const offset = isFirst ? curveIntensity : -curveIntensity;
-            
-            // Perpendicular vector for offset
-            const perpX = -dy / len * offset;
-            const perpY = dx / len * offset;
-            
-            // Control points at 1/3 and 2/3 along the path, offset perpendicular
-            const ctrl1X = points.sx + dx * 0.25 + perpX;
-            const ctrl1Y = points.sy + dy * 0.25 + perpY;
-            const ctrl2X = points.sx + dx * 0.75 + perpX;
-            const ctrl2Y = points.sy + dy * 0.75 + perpY;
-            
-            return `M${points.sx},${points.sy} C${ctrl1X},${ctrl1Y} ${ctrl2X},${ctrl2Y} ${points.tx},${points.ty}`;
+          // When nodes are very close, default to vertical layout with slight curve
+          const minDistance = 10;
+          const effectiveVertical = distance < minDistance 
+            ? isFirst  // Use consistent direction based on edge order
+            : Math.abs(dy) > Math.abs(dx);
+          
+          let startX: number, startY: number, endX: number, endY: number;
+          let ctrl1X: number, ctrl1Y: number, ctrl2X: number, ctrl2Y: number;
+          
+          if (effectiveVertical) {
+            // Vertical layout: connect from bottom/top of nodes
+            if (dy > 0) {
+              // Source above target
+              startX = sx + sideOffset;
+              startY = sy + NODE_HEIGHT / 2;
+              endX = tx + sideOffset;
+              endY = ty - NODE_HEIGHT / 2;
+            } else {
+              // Source below target
+              startX = sx + sideOffset;
+              startY = sy - NODE_HEIGHT / 2;
+              endX = tx + sideOffset;
+              endY = ty + NODE_HEIGHT / 2;
+            }
+            // Control points extend vertically (smoothstep style)
+            const ctrlOffset = Math.abs(endY - startY) * 0.5;
+            ctrl1X = startX;
+            ctrl1Y = startY + (dy > 0 ? ctrlOffset : -ctrlOffset);
+            ctrl2X = endX;
+            ctrl2Y = endY + (dy > 0 ? -ctrlOffset : ctrlOffset);
+          } else {
+            // Horizontal layout: connect from left/right of nodes
+            if (dx > 0) {
+              // Source left of target
+              startX = sx + NODE_WIDTH / 2;
+              startY = sy + sideOffset;
+              endX = tx - NODE_WIDTH / 2;
+              endY = ty + sideOffset;
+            } else {
+              // Source right of target
+              startX = sx - NODE_WIDTH / 2;
+              startY = sy + sideOffset;
+              endX = tx + NODE_WIDTH / 2;
+              endY = ty + sideOffset;
+            }
+            // Control points extend horizontally (smoothstep style)
+            const ctrlOffset = Math.abs(endX - startX) * 0.5;
+            ctrl1X = startX + (dx > 0 ? ctrlOffset : -ctrlOffset);
+            ctrl1Y = startY;
+            ctrl2X = endX + (dx > 0 ? -ctrlOffset : ctrlOffset);
+            ctrl2Y = endY;
           }
           
-          // Single direction: slight curve for visual appeal
-          const offset = curveIntensity * 0.3;
-          const perpX = -dy / len * offset;
-          const perpY = dx / len * offset;
-          
-          const ctrl1X = points.sx + dx * 0.25 + perpX;
-          const ctrl1Y = points.sy + dy * 0.25 + perpY;
-          const ctrl2X = points.sx + dx * 0.75 + perpX;
-          const ctrl2Y = points.sy + dy * 0.75 + perpY;
-          
-          return `M${points.sx},${points.sy} C${ctrl1X},${ctrl1Y} ${ctrl2X},${ctrl2Y} ${points.tx},${points.ty}`;
+          return `M${startX},${startY} C${ctrl1X},${ctrl1Y} ${ctrl2X},${ctrl2Y} ${endX},${endY}`;
         });
 
-      // Update edge labels position along the curve
+      // Helper function to compute curve geometry for an edge
+      // Returns start, end, and control points
+      const getEdgeCurveGeometry = (d: D3Edge) => {
+        if (!d.sourceNode || !d.targetNode) return null;
+        
+        const sx = d.sourceNode.x;
+        const sy = d.sourceNode.y;
+        const tx = d.targetNode.x;
+        const ty = d.targetNode.y;
+        const dx = tx - sx;
+        const dy = ty - sy;
+        const distance = Math.sqrt(dx * dx + dy * dy);
+        
+        // Use sourceId/targetId (original strings) since D3 mutates source/target to objects
+        const hasReverse = d3Edges.some(
+          (e) => e.sourceId === d.targetId && e.targetId === d.sourceId
+        ) || (d.sourceNode.type !== 'hub' && d.targetNode.type !== 'hub');
+        const isFirst = d.sourceId < d.targetId;
+        const sideOffset = hasReverse ? (isFirst ? 12 : -12) : 0;
+        
+        const minDistance = 10;
+        const effectiveVertical = distance < minDistance ? isFirst : Math.abs(dy) > Math.abs(dx);
+        
+        let startX: number, startY: number, endX: number, endY: number;
+        let ctrl1X: number, ctrl1Y: number, ctrl2X: number, ctrl2Y: number;
+        
+        if (effectiveVertical) {
+          if (dy > 0) {
+            startX = sx + sideOffset;
+            startY = sy + NODE_HEIGHT / 2;
+            endX = tx + sideOffset;
+            endY = ty - NODE_HEIGHT / 2;
+          } else {
+            startX = sx + sideOffset;
+            startY = sy - NODE_HEIGHT / 2;
+            endX = tx + sideOffset;
+            endY = ty + NODE_HEIGHT / 2;
+          }
+          const ctrlOffset = Math.abs(endY - startY) * 0.5;
+          ctrl1X = startX;
+          ctrl1Y = startY + (dy > 0 ? ctrlOffset : -ctrlOffset);
+          ctrl2X = endX;
+          ctrl2Y = endY + (dy > 0 ? -ctrlOffset : ctrlOffset);
+        } else {
+          if (dx > 0) {
+            startX = sx + NODE_WIDTH / 2;
+            startY = sy + sideOffset;
+            endX = tx - NODE_WIDTH / 2;
+            endY = ty + sideOffset;
+          } else {
+            startX = sx - NODE_WIDTH / 2;
+            startY = sy + sideOffset;
+            endX = tx + NODE_WIDTH / 2;
+            endY = ty + sideOffset;
+          }
+          const ctrlOffset = Math.abs(endX - startX) * 0.5;
+          ctrl1X = startX + (dx > 0 ? ctrlOffset : -ctrlOffset);
+          ctrl1Y = startY;
+          ctrl2X = endX + (dx > 0 ? -ctrlOffset : ctrlOffset);
+          ctrl2Y = endY;
+        }
+        
+        return { startX, startY, ctrl1X, ctrl1Y, ctrl2X, ctrl2Y, endX, endY };
+      };
+
+      // Update edge labels position at the midpoint of the bezier curve
+      // Position labels at 1/4 from source - this naturally separates bidirectional labels
       edges.select('.edge-label')
         .attr('x', (d) => {
-          if (!d.sourceNode || !d.targetNode) return 0;
-          const points = getClosestPoints(d.sourceNode, d.targetNode);
-          const dx = points.tx - points.sx;
-          const dy = points.ty - points.sy;
-          const len = Math.sqrt(dx * dx + dy * dy);
-          const curveIntensity = Math.min(len * 0.25, 50);
-          
-          const hasReverse = d3Edges.some(
-            (e) => e.source === d.target && e.target === d.source
-          );
-          
-          const midX = (points.sx + points.tx) / 2;
-          
-          if (hasReverse) {
-            const isFirst = d.source < d.target;
-            const offset = isFirst ? curveIntensity * 0.5 : -curveIntensity * 0.5;
-            const perpX = -dy / len * offset;
-            return midX + perpX;
-          }
-          
-          return midX + (-dy / len * curveIntensity * 0.15);
+          const geom = getEdgeCurveGeometry(d);
+          if (!geom) return 0;
+          return bezierPoint(0.25, geom.startX, geom.ctrl1X, geom.ctrl2X, geom.endX);
         })
         .attr('y', (d) => {
-          if (!d.sourceNode || !d.targetNode) return 0;
-          const points = getClosestPoints(d.sourceNode, d.targetNode);
-          const dx = points.tx - points.sx;
-          const dy = points.ty - points.sy;
-          const len = Math.sqrt(dx * dx + dy * dy);
-          const curveIntensity = Math.min(len * 0.25, 50);
-          
-          const hasReverse = d3Edges.some(
-            (e) => e.source === d.target && e.target === d.source
-          );
-          
-          const midY = (points.sy + points.ty) / 2;
-          
-          if (hasReverse) {
-            const isFirst = d.source < d.target;
-            const offset = isFirst ? curveIntensity * 0.5 : -curveIntensity * 0.5;
-            const perpY = dx / len * offset;
-            return midY + perpY;
-          }
-          
-          return midY + (dx / len * curveIntensity * 0.15);
+          const geom = getEdgeCurveGeometry(d);
+          if (!geom) return 0;
+          return bezierPoint(0.25, geom.startY, geom.ctrl1Y, geom.ctrl2Y, geom.endY);
         });
 
       // Update edge label backgrounds
