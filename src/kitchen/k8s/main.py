@@ -247,20 +247,7 @@ def config_show(
     }, sort_keys=False).rstrip())
 
 
-@k8s_config_app.command(
-    "list",
-    help="List clusters with configs under ~/.kube/kitchen/config/ and mark the default (if set)",
-)
-def config_list() -> None:
-    clusters = ConfigManager.list_clusters()
-    default_name, _ = ConfigManager.get_default_cluster()
-    if not clusters:
-        typer.secho("ℹ️  No cluster configs found.", fg=typer.colors.YELLOW)
-        return
-    typer.secho("📚 Clusters:", fg=typer.colors.CYAN)
-    for c in clusters:
-        marker = " (default)" if default_name and c == default_name else ""
-        typer.echo(f"  - {c}{marker}")
+
 
 
 @k8s_config_app.command(
@@ -282,10 +269,10 @@ def config_set_default(cluster: str = typer.Option(..., "--cluster", help="Clust
 
 
 @k8s_config_app.command(
-    "default",
+    "show-default",
     help="Show the current default cluster name (from ~/.kube/kitchen/config/default)",
 )
-def config_default() -> None:
+def config_show_default() -> None:
     name, msg = ConfigManager.get_default_cluster()
     if name:
         typer.secho("⭐ Default cluster:", fg=typer.colors.CYAN)
@@ -756,68 +743,7 @@ def _setup_worker_node(worker: str, verbose: bool, ssh_key_path: Optional[str]):
             raise typer.Exit(1)
 
 
-@node_app.command("add", help="Add a new node to the cluster (join flow; WIP).")
-def node_add(
-    ctx: typer.Context,
-    master: str = typer.Option(..., "--master", "-m", help="Master node IP or hostname (user@host)"),
-    target: str = typer.Option(
-        "localhost",
-        "--target",
-        "-t",
-        help="Target node to add. Can be 'localhost' or a remote 'user@host' string.",
-    ),
-    user: Optional[str] = typer.Option(None, help="Override user for master or target. Do not use with user@host."),
-    ssh_key: Optional[str] = None,
-    dry_run: bool = False,
-    verbose: bool = False,
-) -> None:
-    """Add a new node to the Kubernetes cluster."""
-    typer.echo("🚀 Starting node addition process...")
-
-    # Validate that user is not provided with user@host format
-    if user and ("@" in master or "@" in target):
-        typer.secho(
-            "❌ Do not use the --user flag when specifying user@host in --master or --target.", fg=typer.colors.RED
-        )
-        raise typer.Exit(1)
-
-    master_user, master_host = _parse_host_string(master, user)
-    target_user, target_host = _parse_host_string(target, user)
-
-    if target_host == "localhost":
-        typer.echo("📍 Target node: localhost (this machine)")
-    else:
-        typer.echo(f"📍 Target node: {target_user}@{target_host}")
-
-    try:
-        # For add, we don't need to elevate privileges on the master initially
-        with SSHSession(master_user, master_host, ssh_key_path=ssh_key, verbose=verbose) as ssh:
-            typer.secho(f"📋 Running pre-flight checks on master node ({master_host})...", fg=typer.colors.BLUE)
-            pre_checks = MasterNodePreChecks(ssh, verbose)
-            if not pre_checks.run_checks():
-                typer.secho(
-                    "\n❌ Pre-flight checks failed on the master node.",
-                    fg=typer.colors.RED,
-                )
-                typer.secho(
-                    "Please run 'kitchen k8s node check --role master --host <user@host>' to diagnose and fix the issues.",
-                    fg=typer.colors.YELLOW,
-                )
-                raise typer.Exit(1)
-
-            typer.secho("✅ Pre-flight checks passed on master node.", fg=typer.colors.GREEN)
-            # TODO: Implement the logic to add the new node, now that the master is verified.
-            typer.secho("\n🚧 Node joining logic not yet implemented.", fg=typer.colors.YELLOW)
-
-    except typer.Abort:
-        typer.echo("Aborted.")
-    except Exception as e:
-        logger.error(f"An error occurred during the node addition process: {e}")
-        typer.secho(f"❌ An error occurred: {e}", fg=typer.colors.RED)
-        raise typer.Exit(1)
-
-
-"""Re-architecture: removed 'k8s nodes list'."""
+"""Re-architecture: removed 'k8s nodes list' and 'k8s node add'."""
 
 
 """Re-architecture: removed 'k8s status'."""
