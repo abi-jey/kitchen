@@ -6,7 +6,11 @@ Manages node pools configuration stored under ~/.kube/kitchen/config/<cluster>/n
 
 from __future__ import annotations
 
+import logging
 import os
+import re
+import subprocess
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
@@ -21,6 +25,13 @@ from rich.text import Text
 
 from kitchen.config import ConfigManager
 from kitchen.config.models import NodePool, NodePoolAzureConfig, NodePoolSSH, NodePoolsConfig
+from kitchen.ssh import SSHSession
+from kitchen.k8s.handlers.tailscale import TailscaleHandler
+from kitchen.k8s.handlers.crio import CrioHandler
+from kitchen.k8s.handlers.kubernetes_components import KubernetesComponentsHandler
+
+
+logger = logging.getLogger(__name__)
 
 
 node_pools_app = typer.Typer(help="Manage cluster node pools")
@@ -82,6 +93,243 @@ class NodePools:
             typer.secho(f"❌ {msg}", fg=typer.colors.RED)
             raise typer.Exit(1)
         return pools_cfg
+
+    def _get_k8s_node_ips(self) -> set[str] | None:
+        """Get set of internal IPs of all K8s nodes via kubectl.
+
+        Returns None if kubectl fails (cluster not reachable).
+        """
+        import shutil
+        import subprocess
+
+        kubectl = shutil.which("kubectl")
+        if not kubectl:
+            return None
+
+        cmd = [
+            kubectl,
+            "get",
+            "nodes",
+            "-o",
+            "jsonpath={.items[*].status.addresses[?(@.type=='InternalIP')].address}",
+        ]
+
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            return None
+
+        ips = result.stdout.strip().split()
+        return set(ips) if ips else set()
+
+    def _fetch_join_credentials_from_master(
+        self,
+        *,
+        master_user: str,
+        master_host: str,
+        ssh_key_path: str | None,
+        verbose: bool = False,
+    ) -> tuple[str | None, str | None, str | None]:
+        """SSH to master and generate fresh kubeadm join credentials.
+
+        Returns: (token, ca_cert_hash, error_message)
+        On success: (token, hash, None)
+        On failure: (None, None, error_message)
+        """
+        typer.secho(
+            f"🔑 Fetching fresh join credentials from master {master_host}...",
+            fg=typer.colors.CYAN,
+        )
+
+        try:
+            with SSHSession(master_user, master_host, ssh_key_path, verbose) as ssh:
+                stdout, stderr, code = ssh.run(
+                    "kubeadm token create --print-join-command",
+                    use_sudo=True,
+                    timeout=30.0,
+                )
+                if code != 0:
+                    return None, None, f"Failed to create token: {stderr or stdout}"
+
+                join_cmd = stdout.strip()
+                if not join_cmd:
+                    return None, None, "Empty response from kubeadm token create"
+
+                # Parse token
+                token_match = re.search(r"--token\s+([a-z0-9]{6}\.[a-z0-9]{16})", join_cmd)
+                if not token_match:
+                    return None, None, f"Could not parse token from: {join_cmd}"
+                token = token_match.group(1)
+
+                # Parse CA hash
+                hash_match = re.search(
+                    r"--discovery-token-ca-cert-hash\s+(sha256:[a-f0-9]{64})", join_cmd
+                )
+                if not hash_match:
+                    return None, None, f"Could not parse CA hash from: {join_cmd}"
+                ca_hash = hash_match.group(1)
+
+                typer.secho(f"✅ Got fresh token: {token[:10]}...", fg=typer.colors.GREEN)
+                return token, ca_hash, None
+
+        except Exception as e:
+            return None, None, f"Failed to connect to master: {e}"
+
+    def _prepare_phase(self, handler, name: str, verbose: bool) -> tuple[bool, str]:
+        """Install + configure a component handler.
+
+        Returns: (success, message)
+        """
+        inst = handler.check_installed()
+        if not inst.ok:
+            typer.secho(f"  🛠️  Installing {name}...", fg=typer.colors.YELLOW)
+            if not handler.install():
+                return False, f"Failed to install {name}"
+            inst = handler.check_installed()
+            if not inst.ok:
+                return False, f"{name} installation check failed: {inst.message}"
+
+        cfg = handler.check_config()
+        if not cfg.ok:
+            typer.secho(f"  🔧 Configuring {name}...", fg=typer.colors.YELLOW)
+            if not handler.configure():
+                return False, f"Failed to configure {name}"
+            cfg = handler.check_config()
+            if not cfg.ok:
+                return False, f"{name} configuration failed: {cfg.message}"
+
+        typer.secho(f"  ✅ {name} ready", fg=typer.colors.GREEN)
+        return True, f"{name} ready"
+
+    def _join_single_node(
+        self,
+        *,
+        host: str,
+        ssh_config: NodePoolSSH,
+        endpoint: str,
+        kubeadm_token: str,
+        discovery_hash: str,
+        tailscale_auth_key: str | None = None,
+        kubernetes_version: str | None = None,
+        verbose: bool = False,
+    ) -> tuple[bool, str]:
+        """Join a single node to the cluster via SSH.
+
+        Prepares the node (tailscale, container runtime, kube components) then
+        runs kubeadm join.
+
+        Args:
+            host: Public IP or hostname to SSH into
+            ssh_config: SSH credentials from the pool
+            endpoint: K8s API endpoint (host:port)
+            kubeadm_token: kubeadm bootstrap token
+            discovery_hash: CA cert hash (sha256:...)
+            tailscale_auth_key: Optional Tailscale auth key for node setup
+            kubernetes_version: K8s version (e.g., "v1.33")
+            verbose: Enable verbose output
+
+        Returns: (success, message)
+        """
+        user = ssh_config.username
+        key_path = ssh_config.key_path
+        password = ssh_config.password
+
+        typer.secho(f"🔗 Joining node {host}...", fg=typer.colors.CYAN)
+
+        try:
+            with SSHSession(
+                user=user,
+                host=host,
+                ssh_key_path=key_path,
+                password=password,
+                verbose=verbose,
+            ) as ssh:
+                # Check if node is already part of a cluster
+                _, _, code = ssh.run(
+                    "test -f /etc/kubernetes/kubelet.conf", use_sudo=True
+                )
+                if code == 0:
+                    return False, "Node already joined (kubelet.conf exists)"
+
+                # Phase 1: Tailscale
+                typer.secho(f"  📦 Preparing node...", fg=typer.colors.CYAN)
+                ts = TailscaleHandler(ssh, verbose)
+                inst = ts.check_installed()
+                if not inst.ok:
+                    typer.secho(f"  🛠️  Installing tailscale...", fg=typer.colors.YELLOW)
+                    if not ts.install():
+                        return False, "Failed to install tailscale"
+                cfg_ok = ts.check_config()
+                if not cfg_ok.ok:
+                    typer.secho(f"  🔧 Configuring tailscale...", fg=typer.colors.YELLOW)
+                    ts.configure(auth_key=tailscale_auth_key)
+                    cfg_ok = ts.check_config()
+                if not cfg_ok.ok:
+                    # Tailscale not required for join, just warn
+                    typer.secho(f"  ⚠️  tailscale not ready: {cfg_ok.message}", fg=typer.colors.YELLOW)
+                else:
+                    typer.secho(f"  ✅ tailscale ready", fg=typer.colors.GREEN)
+
+                # Phase 2: Container runtime (CRI-O)
+                crio = CrioHandler(ssh, verbose, kubernetes_version=kubernetes_version)
+                ok, msg = self._prepare_phase(crio, "container-runtime", verbose)
+                if not ok:
+                    return False, msg
+
+                # Phase 3: Kubernetes components
+                kube = KubernetesComponentsHandler(ssh, verbose, kubernetes_version=kubernetes_version)
+                ok, msg = self._prepare_phase(kube, "kube-components", verbose)
+                if not ok:
+                    return False, msg
+
+
+                # Build JoinConfiguration
+                cri_socket = "unix:///var/run/crio/crio.sock"
+                join_yaml_path = "/tmp/kitchen-join.yaml"
+
+                # Get Tailscale IP for node-ip if available
+                ts_ip_out, _, _ = ssh.run("tailscale ip -4", use_sudo=True)
+                ts_ip = ts_ip_out.strip().splitlines()[-1] if ts_ip_out.strip() else ""
+
+                join_yaml = (
+                    "apiVersion: kubeadm.k8s.io/v1beta4\n"
+                    "kind: JoinConfiguration\n"
+                    "discovery:\n"
+                    "  bootstrapToken:\n"
+                    f"    token: {kubeadm_token}\n"
+                    f"    apiServerEndpoint: {endpoint}\n"
+                    "    caCertHashes:\n"
+                    f"      - {discovery_hash}\n"
+                    "nodeRegistration:\n"
+                    f"  criSocket: {cri_socket}\n"
+                )
+
+                if ts_ip:
+                    join_yaml += (
+                        "  kubeletExtraArgs:\n"
+                        "    - name: node-ip\n"
+                        f"      value: {ts_ip}\n"
+                    )
+
+                # Write join config
+                write_cmd = f"cat > {join_yaml_path} <<'EOF'\n{join_yaml}EOF\n"
+                _, stderr, code = ssh.run(write_cmd, use_sudo=True)
+                if code != 0:
+                    return False, f"Failed to write JoinConfiguration: {stderr}"
+
+                # Run kubeadm join
+                typer.secho(f"  🚀 Running kubeadm join...", fg=typer.colors.BLUE)
+                stdout, stderr, code = ssh.run(
+                    f"kubeadm join --config {join_yaml_path}",
+                    use_sudo=True,
+                    timeout=120.0,
+                )
+                if code != 0:
+                    return False, f"kubeadm join failed: {stderr or stdout}"
+
+                return True, "Joined successfully"
+
+        except Exception as e:
+            return False, str(e)
 
     def list(self, *, cluster: str | None) -> None:
         pools_cfg = self._load_pools_or_exit(cluster)
@@ -278,13 +526,24 @@ class NodePools:
 
         typer.secho(f"✅ Removed node pool '{pool_name}'", fg=typer.colors.GREEN)
 
-    def scale(self, *, pool_name: str, size: int, cluster: str | None) -> None:
+    def scale(
+        self,
+        *,
+        pool_name: str,
+        size: int,
+        cluster: str | None,
+        auto_join: bool = False,
+        master: str | None = None,
+        endpoint: str | None = None,
+        verbose: bool = False,
+    ) -> None:
         if size < 0:
             typer.secho("❌ Size must be >= 0.", fg=typer.colors.RED)
             raise typer.Exit(1)
 
         pools_cfg = self._load_pools_or_exit(cluster)
 
+        target_pool: NodePool | None = None
         target_provider: str | None = None
         target_azure = None
         updated = False
@@ -294,6 +553,7 @@ class NodePools:
                 new_list.append(p)
                 continue
 
+            target_pool = p
             target_provider = (p.provider or "").strip().lower()
             target_azure = p.azure
             new_list.append(
@@ -308,9 +568,11 @@ class NodePools:
             )
             updated = True
 
-        if not updated:
+        if not updated or target_pool is None:
             typer.secho(f"❌ Pool '{pool_name}' not found.", fg=typer.colors.RED)
             raise typer.Exit(1)
+
+        instances_to_join: list[tuple[str, str]] = []  # (public_ip, name)
 
         # Provider-specific action (best-effort for now).
         if target_provider == "azure":
@@ -324,13 +586,46 @@ class NodePools:
                         fg=typer.colors.RED,
                     )
                     raise typer.Exit(1)
-                output = AzureNodeProvider(
+                provider = AzureNodeProvider(
                     vmss_name=target_azure.vmss_name,
                     resource_group=target_azure.resource_group,
-                ).scale_pool(pool_name, size)
+                )
+                output = provider.scale_pool(pool_name, size)
 
                 if output:
                     typer.echo(output)
+
+                # After scaling, list instances and show their status
+                typer.secho("\n📋 VMSS Instances:", fg=typer.colors.CYAN)
+                instances = provider.list_instances()
+                if not instances:
+                    typer.echo("   (no instances)")
+                else:
+                    for inst in instances:
+                        pub_ip = inst.public_ip or "N/A"
+                        priv_ip = inst.private_ip or "N/A"
+                        typer.echo(
+                            f"   • {inst.name} (id={inst.instance_id}) "
+                            f"public={pub_ip} private={priv_ip} "
+                            f"state={inst.provisioning_state}/{inst.power_state}"
+                        )
+
+                # Get K8s node IPs to show join status (uses private IPs for internal cluster)
+                k8s_node_ips = self._get_k8s_node_ips()
+                if k8s_node_ips is not None:
+                    typer.secho("\n🔗 Cluster Membership:", fg=typer.colors.CYAN)
+                    for inst in instances:
+                        if not inst.private_ip:
+                            status = "❓ unknown (no IP)"
+                        elif inst.private_ip in k8s_node_ips:
+                            status = "✅ joined"
+                        else:
+                            status = "⏳ not joined"
+                            # Collect for auto-join
+                            if inst.public_ip:
+                                instances_to_join.append((inst.public_ip, inst.name))
+                        display = inst.public_ip or inst.private_ip or inst.name
+                        typer.echo(f"   • {display}: {status}")
             except ValueError as e:
                 typer.secho(f"❌ {e}", fg=typer.colors.RED)
                 raise typer.Exit(1)
@@ -349,6 +644,126 @@ class NodePools:
             raise typer.Exit(1)
 
         typer.secho(f"✅ Scaled node pool '{pool_name}' to size={size}", fg=typer.colors.GREEN)
+
+        # Auto-join logic
+        if not instances_to_join:
+            return
+
+        if not auto_join:
+            typer.secho(
+                f"\n💡 {len(instances_to_join)} node(s) not joined. "
+                "Use --auto-join to automatically join them.",
+                fg=typer.colors.YELLOW,
+            )
+            return
+
+        typer.secho(f"\n🔧 Auto-joining {len(instances_to_join)} node(s)...", fg=typer.colors.CYAN)
+
+        # Get join credentials
+        kubeadm_token: str | None = None
+        discovery_hash: str | None = None
+        eff_endpoint: str | None = endpoint
+
+        if master:
+            # Parse master string
+            if "@" in master:
+                master_user, master_host = master.split("@", 1)
+            else:
+                import getpass
+                master_user = getpass.getuser()
+                master_host = master
+
+            token, ca_hash, err = self._fetch_join_credentials_from_master(
+                master_user=master_user,
+                master_host=master_host,
+                ssh_key_path=target_pool.ssh.key_path,
+                verbose=verbose,
+            )
+            if err:
+                typer.secho(f"❌ Failed to get join credentials: {err}", fg=typer.colors.RED)
+                return
+            kubeadm_token = token
+            discovery_hash = ca_hash
+        else:
+            # Load from saved secrets
+            secrets, smsg = ConfigManager.load_cluster_secrets(cluster=cluster)
+            if not secrets:
+                typer.secho(f"❌ {smsg}", fg=typer.colors.RED)
+                typer.secho(
+                    "💡 Use --master user@host to fetch fresh credentials from master node.",
+                    fg=typer.colors.YELLOW,
+                )
+                return
+            if not secrets.kubeadm_token or not secrets.discovery_token_ca_cert_hash:
+                typer.secho(
+                    "❌ Missing kubeadm token or discovery hash in saved secrets.",
+                    fg=typer.colors.RED,
+                )
+                typer.secho(
+                    "💡 Use --master user@host to fetch fresh credentials from master node.",
+                    fg=typer.colors.YELLOW,
+                )
+                return
+            kubeadm_token = secrets.kubeadm_token
+            discovery_hash = secrets.discovery_token_ca_cert_hash
+
+        # Load secrets for tailscale auth key (for node prep)
+        tailscale_auth_key: str | None = None
+        secrets_for_ts, _ = ConfigManager.load_cluster_secrets(cluster=cluster)
+        if secrets_for_ts:
+            tailscale_auth_key = getattr(secrets_for_ts, 'tailscale_auth_key', None)
+
+        # Determine endpoint and kubernetes_version from master config
+        master_cfg, _ = ConfigManager.load_master_config(cluster=cluster)
+        kubernetes_version: str | None = None
+
+        if master_cfg:
+            kubernetes_version = master_cfg.kubernetes_version
+
+            # Determine endpoint if not provided
+            if not eff_endpoint:
+                # Prefer Tailscale IP (100.x.x.x), then first IP, then hostname
+                for ip in master_cfg.ips or []:
+                    if ip.startswith("100."):
+                        eff_endpoint = f"{ip}:6443"
+                        break
+                if not eff_endpoint and master_cfg.ips:
+                    eff_endpoint = f"{master_cfg.ips[0]}:6443"
+                if not eff_endpoint and master_cfg.hostname:
+                    eff_endpoint = f"{master_cfg.hostname}:6443"
+
+        if not eff_endpoint:
+            typer.secho(
+                "❌ Could not determine API endpoint. Use --endpoint to specify.",
+                fg=typer.colors.RED,
+            )
+            return
+
+        # Join each node
+        joined = 0
+        failed = 0
+        for pub_ip, name in instances_to_join:
+            ok, msg = self._join_single_node(
+                host=pub_ip,
+                ssh_config=target_pool.ssh,
+                endpoint=eff_endpoint,
+                kubeadm_token=kubeadm_token,
+                discovery_hash=discovery_hash,
+                tailscale_auth_key=tailscale_auth_key,
+                kubernetes_version=kubernetes_version,
+                verbose=verbose,
+            )
+            if ok:
+                typer.secho(f"  ✅ {name} ({pub_ip}): {msg}", fg=typer.colors.GREEN)
+                joined += 1
+            else:
+                typer.secho(f"  ❌ {name} ({pub_ip}): {msg}", fg=typer.colors.RED)
+                failed += 1
+
+        typer.secho(
+            f"\n📊 Join summary: {joined} succeeded, {failed} failed",
+            fg=typer.colors.GREEN if failed == 0 else typer.colors.YELLOW,
+        )
 
 
 cli = NodePools(console)
@@ -440,6 +855,23 @@ def scale_pool(
     name: Optional[str] = typer.Option(None, "--name", help="Node pool name (alternative to positional arg)"),
     size: Optional[int] = typer.Option(None, "--size", help="New size (alternative to positional arg)"),
     cluster: str | None = typer.Option(None, "--cluster", help="Cluster name (uses default if omitted)"),
+    auto_join: bool = typer.Option(
+        False,
+        "--auto-join",
+        help="Automatically join un-joined nodes to the cluster after scaling up.",
+    ),
+    master: str | None = typer.Option(
+        None,
+        "--master",
+        "-m",
+        help="Master node user@host to fetch fresh join credentials (required for auto-join if no saved secrets).",
+    ),
+    endpoint: str | None = typer.Option(
+        None,
+        "--endpoint",
+        help="K8s API endpoint (host:port) for kubeadm join. Auto-detected from config if omitted.",
+    ),
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable verbose output."),
 ) -> None:
     pool_name = name or pool
     new_size = size if size is not None else to
@@ -450,4 +882,12 @@ def scale_pool(
         typer.secho("❌ Missing size. Provide it as an argument or via --size.", fg=typer.colors.RED)
         raise typer.Exit(1)
 
-    cli.scale(pool_name=pool_name, size=new_size, cluster=cluster)
+    cli.scale(
+        pool_name=pool_name,
+        size=new_size,
+        cluster=cluster,
+        auto_join=auto_join,
+        master=master,
+        endpoint=endpoint,
+        verbose=verbose,
+    )

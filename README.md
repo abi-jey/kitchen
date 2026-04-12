@@ -111,6 +111,31 @@ kitchen k8s node add --master user@master-node --target user@worker-node
 
 The `check` and `prepare` commands accept `--phases` to target specific components. If omitted, sensible defaults are used based on the node role.
 
+#### Proposal: Improving Node Adds with Labels and Taints
+Currently, when nodes are provisioned (either manually via `node join` or automated via `node-pools scale`), the node setup SSH script writes a bare-minimum `JoinConfiguration` (`/tmp/kitchen-join.yaml`) dynamically, attaching `node-ip` for Tailscale logic if found.
+
+*The Problem:* There is no native support for assigning Kubernetes Labels or Taints. This forces admins to manually execute `kubectl label nodes <name>` post-join, which leads to race conditions where unintended workloads might schedule before labels/taints are applied.
+
+**Proposed Implementation:**
+1. **NodePool Schema Updates:** Extend `NodePool` in `src/kitchen/config/models.py` to include `labels: dict[str, str]` and `taints: list[str]`.
+2. **Kubeadm JoinConfiguration modifications:**
+   - **Labels:** Update the `JoinConfiguration` to append `node-labels` to the `kubeletExtraArgs` map. Since Kubeadm requires this as a comma-separated list, we will generate:
+     ```yaml
+     nodeRegistration:
+       kubeletExtraArgs:
+         - name: node-labels
+           value: "pool=my-azure-workers,env=production"
+     ```
+   - **Taints:** Add `taints` natively to `nodeRegistration` inside the dynamic YAML.
+     ```yaml
+     nodeRegistration:
+       taints:
+         - key: "gpu"
+           value: "true"
+           effect: "NoSchedule"
+     ```
+3. **CLI Arguments:** Extend `kitchen k8s node join` to accept `--label` and `--taint` flags. This enables users to attach workload isolation topologies from the get-go reliably before the kubelet registers to the API server.
+
 ### Tailscale Integration
 
 Kitchen integrates with [Tailscale](https://tailscale.com) for secure, mesh networking between Kubernetes nodes:
@@ -145,9 +170,41 @@ kitchen node-manager status
 # View node manager logs
 kitchen node-manager logs --follow
 
-# Access node manager API
+# Access node manager API locally
 kitchen node-manager api --port 8000
 ```
+
+#### Accessing the UI
+The Node Manager includes a web-based dashboard UI. To access it locally:
+1. Build the UI first (from the repository root):
+   ```bash
+   npm install
+   npm run build
+   ```
+2. Start the API server:
+   ```bash
+   kitchen node-manager api --port 8000
+   ```
+3. Open your browser and navigate to **`http://localhost:8000/ui`**.
+
+### Node Pools & Azure Integration
+Kitchen allows you to define node pools using various cloud providers. Here's an example of how to provision an Azure VMSS node pool and automatically add the instances to your cluster:
+
+```bash
+# 1. Add an Azure Node Pool definition
+kitchen k8s node-pools add \
+  --name my-azure-workers \
+  --provider azure \
+  --azure-vmss-name my-scale-set \
+  --azure-resource-group my-resource-group \
+  --size 0
+
+# 2. Scale the pool and auto-join the new nodes to the Kubernetes cluster
+kitchen k8s node-pools scale my-azure-workers \
+  --size 3 \
+  --auto-join
+```
+*Note: The scale command requires you to have the Azure CLI (`az`) installed and authenticated.*
 
 ### Utility Commands
 ```bash

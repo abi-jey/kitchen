@@ -2,26 +2,41 @@
 
 # TODO
 
-## Next step: apply same logic as `node join`
+## Phase 1: Azure VMSS Instance Discovery ✅ IN PROGRESS
 
-Goal: make `kitchen k8s node-pools scale` perform real, provider-aware scaling using the same end-to-end flow patterns used by the existing `kitchen k8s node join` command (config-driven, consistent UX, and robust error handling).
+### Current Sprint
 
-### Checklist
+- [x] Add `list_instances()` to AzureNodeProvider → returns instance IDs + private IPs
+- [x] Add `get_capacity()` to get current VMSS size
+- [ ] Add kubectl integration to list joined K8s nodes by IP
+- [ ] Compute diff: instances needing join = VMSS IPs - K8s node IPs
+- [ ] Wire into `scale` command to show instance status after scaling
 
-- [ ] Study `kitchen k8s node join` implementation (inputs, config resolution, SSH/session setup, progress output, and failure modes)
-- [ ] Mirror the same structure in `kitchen k8s node-pools scale`:
-  - [ ] Resolve cluster consistently (default vs `--cluster`)
-  - [ ] Load node pool config and validate provider block (e.g., `azure.vmss_name`, `azure.resource_group`)
-  - [ ] Use shared logging / Rich output patterns for progress + success
-  - [ ] Standardize error messages and exit codes
-- [ ] Extend Azure scaling to match “node join” ergonomics:
-  - [ ] Ensure Azure subscription/tenant context is validated (fail fast with actionable guidance)
-  - [ ] Add a “dry-run” mode (prints the `az` command to be executed)
-  - [ ] Optionally confirm before scaling if decreasing size
-- [ ] Wire provider selection cleanly:
-  - [ ] Add a provider factory/registry so `NodePools.scale()` doesn’t import providers inline
-  - [ ] Ensure unsupported providers fail with a clear message
-- [ ] Add minimal tests around config validation and provider dispatch
+### Phase 2: Automated Node Join on Scale-Up
+
+- [ ] Extract reusable join logic from `kitchen k8s node join`
+- [ ] On scale-up: for each un-joined instance IP, run join flow
+- [ ] Use pool.ssh config for SSH credentials
+- [ ] Report per-node join success/failure
+
+### Phase 3: Scale-Down with Drain
+
+- [ ] Identify nodes to remove (by instance ID)
+- [ ] kubectl drain + cordon before VMSS scale-down
+- [ ] Verify nodes removed from K8s
+
+---
+
+## Design Notes
+
+### Tracking Strategy (No Local State)
+
+| Source | Provides |
+|--------|----------|
+| Azure VMSS | List of current instances + their private IPs |
+| Kubernetes API | List of currently joined nodes (by IP or hostname) |
+
+**Join status** = `azure_instances - k8s_nodes` = nodes needing join
 
 ### References
 
@@ -29,3 +44,4 @@ Goal: make `kitchen k8s node-pools scale` perform real, provider-aware scaling u
 - Node pools scaling: src/kitchen/k8s/node_pools_cli.py
 - Provider impl: src/kitchen/node_provider/azure.py
 - Config load/save: src/kitchen/config/manager.py
+- Node join impl: src/kitchen/k8s/main.py (node_join function)

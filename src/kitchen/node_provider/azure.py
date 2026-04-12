@@ -3,14 +3,28 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import shutil
 import subprocess
+from dataclasses import dataclass
 
 from .base import NodeProvider
 
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class VMSSInstance:
+    """Represents an Azure VMSS instance."""
+
+    instance_id: str
+    name: str
+    public_ip: str | None
+    private_ip: str | None
+    provisioning_state: str
+    power_state: str
 
 
 class AzureNodeProvider(NodeProvider):
@@ -74,3 +88,142 @@ class AzureNodeProvider(NodeProvider):
         if stdout and stderr:
             return stdout + "\n" + stderr
         return stdout or stderr or None
+
+    def get_capacity(self) -> int:
+        """Get current VMSS capacity (number of instances)."""
+
+        cmd = [
+            self._az_path,
+            "vmss",
+            "show",
+            "--name",
+            self._vmss_name,
+            "--resource-group",
+            self._resource_group,
+            "--query",
+            "sku.capacity",
+            "--output",
+            "json",
+        ]
+
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            details = (result.stderr or result.stdout or "").strip()
+            raise RuntimeError(f"az vmss show failed (exit {result.returncode}): {details}")
+
+        try:
+            return int(json.loads(result.stdout.strip()))
+        except (ValueError, json.JSONDecodeError) as e:
+            raise RuntimeError(f"Failed to parse VMSS capacity: {e}")
+
+    def list_instances(self) -> list[VMSSInstance]:
+        """List all instances in the VMSS with their IPs and states.
+
+        For Flexible orchestration mode VMSS, uses az vm list-ip-addresses
+        to get both public and private IPs.
+        """
+        # Get instance list from VMSS
+        cmd = [
+            self._az_path,
+            "vmss",
+            "list-instances",
+            "--name",
+            self._vmss_name,
+            "--resource-group",
+            self._resource_group,
+            "--output",
+            "json",
+        ]
+
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            details = (result.stderr or result.stdout or "").strip()
+            raise RuntimeError(f"az vmss list-instances failed (exit {result.returncode}): {details}")
+
+        try:
+            data = json.loads(result.stdout.strip())
+        except json.JSONDecodeError as e:
+            raise RuntimeError(f"Failed to parse VMSS instances JSON: {e}")
+
+        instances: list[VMSSInstance] = []
+        for item in data:
+            instance_id = item.get("instanceId", "")
+            name = item.get("name", "")
+            provisioning_state = item.get("provisioningState", "Unknown")
+
+            # Power state from instanceView.statuses (if expanded)
+            power_state = "Unknown"
+            instance_view = item.get("instanceView") or {}
+            for status in instance_view.get("statuses", []):
+                code = status.get("code", "")
+                if code.startswith("PowerState/"):
+                    power_state = code.replace("PowerState/", "")
+                    break
+
+            instances.append(
+                VMSSInstance(
+                    instance_id=instance_id,
+                    name=name,
+                    public_ip=None,
+                    private_ip=None,
+                    provisioning_state=provisioning_state,
+                    power_state=power_state,
+                )
+            )
+
+        # Fetch IPs via az vm list-ip-addresses (works for Flexible VMSS)
+        if instances:
+            instances = self._enrich_with_ips(instances)
+
+        return instances
+
+    def _enrich_with_ips(self, instances: list[VMSSInstance]) -> list[VMSSInstance]:
+        """Fetch public and private IPs for VMSS instances.
+
+        Uses az vm list-ip-addresses which works for Flexible orchestration VMSS.
+        """
+        cmd = [
+            self._az_path,
+            "vm",
+            "list-ip-addresses",
+            "--resource-group",
+            self._resource_group,
+            "--output",
+            "json",
+        ]
+
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            logger.warning("Failed to fetch VM IPs: %s", result.stderr or result.stdout)
+            return instances
+
+        try:
+            data = json.loads(result.stdout.strip())
+        except json.JSONDecodeError:
+            logger.warning("Failed to parse VM IPs JSON")
+            return instances
+
+        # Build name -> (public_ip, private_ip) map
+        ip_map: dict[str, tuple[str | None, str | None]] = {}
+        for item in data:
+            vm = item.get("virtualMachine", {})
+            vm_name = vm.get("name", "")
+            network = vm.get("network", {})
+
+            # Get first private IP
+            private_ips = network.get("privateIpAddresses", [])
+            private_ip = private_ips[0] if private_ips else None
+
+            # Get first public IP
+            public_ips = network.get("publicIpAddresses", [])
+            public_ip = public_ips[0].get("ipAddress") if public_ips else None
+
+            if vm_name:
+                ip_map[vm_name] = (public_ip, private_ip)
+
+        # Enrich instances
+        for inst in instances:
+            if inst.name in ip_map:
+                inst.public_ip, inst.private_ip = ip_map[inst.name]
+
+        return instances
