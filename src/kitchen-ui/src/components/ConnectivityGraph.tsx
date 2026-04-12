@@ -474,26 +474,10 @@ export const ConnectivityGraphView: React.FC<ConnectivityGraphViewProps> = ({
       .attr('r', 4)
       .attr('fill', (d) => d.ready ? 'var(--success)' : 'var(--error)');
 
-    // Server icon (simplified)
-    nodes.append('rect')
-      .attr('x', -NODE_WIDTH / 2 + 12)
-      .attr('y', -NODE_HEIGHT / 2 + 10)
-      .attr('width', 12)
-      .attr('height', 6)
-      .attr('rx', 1)
-      .attr('fill', 'none')
-      .attr('stroke', (d) => d.ready ? 'var(--success)' : 'var(--error)')
-      .attr('stroke-width', 1.5);
-
-    nodes.append('rect')
-      .attr('x', -NODE_WIDTH / 2 + 12)
-      .attr('y', -NODE_HEIGHT / 2 + 20)
-      .attr('width', 12)
-      .attr('height', 6)
-      .attr('rx', 1)
-      .attr('fill', 'none')
-      .attr('stroke', (d) => d.ready ? 'var(--success)' : 'var(--error)')
-      .attr('stroke-width', 1.5);
+    // Cloud provider icon
+    nodes.append('g')
+      .attr('transform', `translate(${-NODE_WIDTH / 2 + 10}, ${-NODE_HEIGHT / 2 + 10})`)
+      .html((d) => getLocationIconSvg(d.location));
 
     // Hostname label
     nodes.append('text')
