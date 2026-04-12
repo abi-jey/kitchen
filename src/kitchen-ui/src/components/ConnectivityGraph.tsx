@@ -3,6 +3,9 @@
 
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import * as d3 from 'd3';
+import { renderToString } from 'react-dom/server';
+import { FaAws, FaGoogle, FaBuilding } from 'react-icons/fa';
+import { VscAzure } from 'react-icons/vsc';
 import { Loader, Network, RefreshCw, X, Server, Cpu, HardDrive } from 'lucide-react';
 import { getConnectivityGraph } from '../api/client';
 import type { ConnectivityGraph, GraphNode as ApiGraphNode, GraphEdge } from '../types';
@@ -506,22 +509,30 @@ export const ConnectivityGraphView: React.FC<ConnectivityGraphViewProps> = ({
 
     // Location badge background
     nodes.append('rect')
-      .attr('x', -20)
+      .attr('x', -45)
       .attr('y', 16)
-      .attr('width', 40)
+      .attr('width', 90)
       .attr('height', 18)
       .attr('rx', 4)
       .attr('fill', 'var(--bg-secondary)');
 
+    // Location icon
+    nodes.append('g')
+      .attr('transform', 'translate(-40, 18)')
+      .html((d) => renderToString(<LocationIcon location={d.location || 'lab'} />));
+
     // Location text
     nodes.append('text')
-      .attr('x', 0)
+      .attr('x', -20)
       .attr('y', 28)
-      .attr('text-anchor', 'middle')
-      .attr('font-size', 10)
+      .attr('text-anchor', 'start')
+      .attr('font-size', 9)
       .attr('font-weight', 500)
       .attr('fill', 'var(--text-muted)')
-      .text((d) => d.location || 'lab');
+      .text((d) => {
+        const text = d.location || 'lab';
+        return text.length > 12 ? text.substring(0, 11) + '...' : text;
+      });
 
     // Update function for positions
     const updatePositions = () => {
@@ -810,8 +821,9 @@ export const ConnectivityGraphView: React.FC<ConnectivityGraphViewProps> = ({
           successEdges.length
         : null;
 
+    const clusterNodes = graphData.nodes.filter((n) => n.type !== 'hub');
     return {
-      totalNodes: graphData.nodes.length,
+      totalNodes: clusterNodes.length,
       totalEdges: graphData.edges.length,
       successCount: successEdges.length,
       failedCount: failedEdges.length,
