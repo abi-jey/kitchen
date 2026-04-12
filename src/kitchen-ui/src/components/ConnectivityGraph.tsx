@@ -3,9 +3,7 @@
 
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import * as d3 from 'd3';
-import { renderToString } from 'react-dom/server';
-import { FaAws, FaGoogle, FaBuilding } from 'react-icons/fa';
-import { VscAzure } from 'react-icons/vsc';
+import { awsSvg, googleSvg, azureSvg, defaultSvg } from './icons';
 import { Loader, Network, RefreshCw, X, Server, Cpu, HardDrive } from 'lucide-react';
 import { getConnectivityGraph } from '../api/client';
 import type { ConnectivityGraph, GraphNode as ApiGraphNode, GraphEdge } from '../types';
@@ -13,12 +11,12 @@ import { formatLatency } from '../types';
 
 // Node dimensions for edge calculations
 
-const LocationIcon = ({ location }: { location: string }) => {
+const getLocationIconSvg = (location: string | undefined) => {
   const loc = (location || '').toLowerCase();
-  if (loc.includes('azure')) return <VscAzure size={14} color="#0078D4" />;
-  if (loc.includes('aws') || loc.includes('amazon')) return <FaAws size={14} color="#FF9900" />;
-  if (loc.includes('google') || loc.includes('gcp')) return <FaGoogle size={14} color="#4285F4" />;
-  return <FaBuilding size={14} color="#6B7280" />;
+  if (loc.includes('azure')) return azureSvg;
+  if (loc.includes('aws') || loc.includes('amazon')) return awsSvg;
+  if (loc.includes('google') || loc.includes('gcp')) return googleSvg;
+  return defaultSvg;
 };
 
 const NODE_WIDTH = 160;
@@ -528,7 +526,7 @@ export const ConnectivityGraphView: React.FC<ConnectivityGraphViewProps> = ({
     // Location icon
     nodes.append('g')
       .attr('transform', 'translate(-40, 18)')
-      .html((d) => renderToString(<LocationIcon location={d.location || 'lab'} />));
+      .html((d) => getLocationIconSvg(d.location));
 
     // Location text
     nodes.append('text')
