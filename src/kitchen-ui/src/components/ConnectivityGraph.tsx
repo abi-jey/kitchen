@@ -12,6 +12,15 @@ import type { ConnectivityGraph, GraphNode as ApiGraphNode, GraphEdge } from '..
 import { formatLatency } from '../types';
 
 // Node dimensions for edge calculations
+
+const LocationIcon = ({ location }: { location: string }) => {
+  const loc = (location || '').toLowerCase();
+  if (loc.includes('azure')) return <VscAzure size={14} color="#0078D4" />;
+  if (loc.includes('aws') || loc.includes('amazon')) return <FaAws size={14} color="#FF9900" />;
+  if (loc.includes('google') || loc.includes('gcp')) return <FaGoogle size={14} color="#4285F4" />;
+  return <FaBuilding size={14} color="#6B7280" />;
+};
+
 const NODE_WIDTH = 160;
 const NODE_HEIGHT = 90;
 
