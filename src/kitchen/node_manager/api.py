@@ -160,6 +160,7 @@ class GraphNode(BaseModel):
     kubelet_version: Optional[str] = None
     cpu_capacity: Optional[str] = None
     memory_capacity: Optional[str] = None
+    location: Optional[str] = None
 
 
 class GraphEdge(BaseModel):
@@ -837,6 +838,7 @@ class ConnectivityReport(BaseModel):
     """Connectivity report from a node agent."""
 
     source_node: str
+    location: Optional[str] = None
     measurements: List[ConnectivityMeasurement]
 
 
@@ -891,6 +893,17 @@ async def report_connectivity(
                     f"Failed to process measurement for {measurement.target_node}: {e}"
                 )
                 rejected += 1
+
+        # Try to update the node's location if reported by agent
+        if getattr(report, "location", None):
+            node_stmt = select(NodeSnapshot).where(
+                NodeSnapshot.name == report.source_node
+            )
+            node_result = await db.execute(node_stmt)
+            node = node_result.scalars().first()
+            if node and getattr(node, "location", None) != report.location:
+                node.location = report.location
+                db.add(node)
 
         await db.commit()
 
@@ -1023,6 +1036,22 @@ async def get_connectivity_graph(
             else:
                 status = "healthy"
 
+            # Determine location based on node name pattern or DB field if present
+            location = getattr(node, "location", None)
+            if not location:
+                import re
+
+                if node.name in ["abja", "desktop"] or "lab" in node.name.lower():
+                    location = "lab"
+                elif (
+                    "azure" in node.name.lower()
+                    or "stan" in node.name.lower()
+                    or re.search(r"-[a-z0-9]{6}$", node.name)
+                ):
+                    location = "azure (North Europe)"
+                else:
+                    location = "lab"
+
             graph_nodes.append(
                 GraphNode(
                     id=node.name,
@@ -1034,6 +1063,7 @@ async def get_connectivity_graph(
                     kubelet_version=node.kubelet_version,
                     cpu_capacity=node.cpu_capacity,
                     memory_capacity=node.memory_capacity,
+                    location=location,
                 )
             )
 

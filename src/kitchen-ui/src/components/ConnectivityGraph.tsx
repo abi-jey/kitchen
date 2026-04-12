@@ -48,8 +48,31 @@ interface ConnectivityGraphViewProps {
 }
 
 // Store for persisting node positions across renders
-const nodePositions = new Map<string, { x: number; y: number }>();
+const loadSavedPositions = () => {
+  try {
+    const saved = localStorage.getItem('connectivity_graph_positions');
+    if (saved) {
+      const parsed = JSON.parse(saved);
+      return new Map(Object.entries(parsed)) as Map<string, { x: number; y: number }>;
+    }
+  } catch (e) {
+    console.error('Failed to load graph positions from local storage', e);
+  }
+  return new Map<string, { x: number; y: number }>();
+};
+
+const savePositions = (positions: Map<string, { x: number; y: number }>) => {
+  try {
+    const obj = Object.fromEntries(positions);
+    localStorage.setItem('connectivity_graph_positions', JSON.stringify(obj));
+  } catch (e) {
+    console.error('Failed to save graph positions to local storage', e);
+  }
+};
+
+const nodePositions = loadSavedPositions();
 let savedZoomTransform = d3.zoomIdentity;
+let hasInitialCentered = false;
 
 export const ConnectivityGraphView: React.FC<ConnectivityGraphViewProps> = ({
   refreshInterval = 30000,
@@ -364,6 +387,7 @@ export const ConnectivityGraphView: React.FC<ConnectivityGraphViewProps> = ({
           d.x = event.x;
           d.y = event.y;
           nodePositions.set(d.id, { x: event.x, y: event.y });
+          savePositions(nodePositions);
           updatePositions();
         })
         .on('end', (event, d) => {
@@ -374,6 +398,7 @@ export const ConnectivityGraphView: React.FC<ConnectivityGraphViewProps> = ({
           d.fx = d.x;
           d.fy = d.y;
           nodePositions.set(d.id, { x: d.x, y: d.y });
+          savePositions(nodePositions);
         })
       )
       .on('click', (event, d) => {
@@ -720,6 +745,7 @@ export const ConnectivityGraphView: React.FC<ConnectivityGraphViewProps> = ({
           d3Nodes.forEach((n) => {
             nodePositions.set(n.id, { x: n.x, y: n.y });
           });
+          savePositions(nodePositions);
           updatePositions();
         })
         .on('end', () => {
@@ -729,6 +755,7 @@ export const ConnectivityGraphView: React.FC<ConnectivityGraphViewProps> = ({
             n.fy = n.y;
             nodePositions.set(n.id, { x: n.x, y: n.y });
           });
+          savePositions(nodePositions);
         });
     } else {
       // Just update positions without simulation
@@ -741,7 +768,7 @@ export const ConnectivityGraphView: React.FC<ConnectivityGraphViewProps> = ({
     });
 
     // Fit to view on initial render
-    if (!hasAllPositions) {
+    if (!hasInitialCentered || !hasAllPositions) {
       setTimeout(() => {
         const bounds = g.node()?.getBBox();
         if (bounds && bounds.width > 0 && bounds.height > 0) {
@@ -754,7 +781,10 @@ export const ConnectivityGraphView: React.FC<ConnectivityGraphViewProps> = ({
           const translateY = height / 2 - (bounds.y + bounds.height / 2) * scale;
           svg.transition()
             .duration(500)
-            .call(zoom.transform, d3.zoomIdentity.translate(translateX, translateY).scale(scale));
+            .call(zoom.transform, d3.zoomIdentity.translate(translateX, translateY).scale(scale))
+            .on('end', () => {
+              hasInitialCentered = true;
+            });
         }
       }, 500);
     }

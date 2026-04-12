@@ -1,4 +1,5 @@
 """Kubernetes client for cluster operations."""
+
 from __future__ import annotations
 
 import json
@@ -25,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 def format_memory_human_readable(memory_str: Optional[str]) -> Optional[str]:
     """Convert Kubernetes memory format to human-readable format.
-    
+
     Kubernetes reports memory in formats like:
     - 8025388Ki (kibibytes)
     - 16Gi (gibibytes)
@@ -33,38 +34,44 @@ def format_memory_human_readable(memory_str: Optional[str]) -> Optional[str]:
     """
     if not memory_str:
         return None
-    
+
     # Parse the value and unit
-    match = re.match(r'^(\d+(?:\.\d+)?)\s*([KMGTPE]i?)?$', memory_str, re.IGNORECASE)
+    match = re.match(r"^(\d+(?:\.\d+)?)\s*([KMGTPE]i?)?$", memory_str, re.IGNORECASE)
     if not match:
         return memory_str  # Return as-is if we can't parse
-    
+
     value = float(match.group(1))
-    unit = match.group(2) or ''
-    
+    unit = match.group(2) or ""
+
     # Convert to bytes first (using binary prefixes)
     unit_multipliers = {
-        '': 1,
-        'K': 1000, 'Ki': 1024,
-        'M': 1000**2, 'Mi': 1024**2,
-        'G': 1000**3, 'Gi': 1024**3,
-        'T': 1000**4, 'Ti': 1024**4,
-        'P': 1000**5, 'Pi': 1024**5,
-        'E': 1000**6, 'Ei': 1024**6,
+        "": 1,
+        "K": 1000,
+        "Ki": 1024,
+        "M": 1000**2,
+        "Mi": 1024**2,
+        "G": 1000**3,
+        "Gi": 1024**3,
+        "T": 1000**4,
+        "Ti": 1024**4,
+        "P": 1000**5,
+        "Pi": 1024**5,
+        "E": 1000**6,
+        "Ei": 1024**6,
     }
-    
+
     multiplier = unit_multipliers.get(unit, 1)
     bytes_value = value * multiplier
-    
+
     # Convert to most appropriate human-readable unit
-    units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB']
+    units = ["B", "KB", "MB", "GB", "TB", "PB"]
     unit_index = 0
     display_value = bytes_value
-    
+
     while display_value >= 1024 and unit_index < len(units) - 1:
         display_value /= 1024
         unit_index += 1
-    
+
     # Format with appropriate precision
     if display_value >= 100:
         return f"{display_value:.0f} {units[unit_index]}"
@@ -76,17 +83,17 @@ def format_memory_human_readable(memory_str: Optional[str]) -> Optional[str]:
 
 class K8sClient:
     """Client for interacting with Kubernetes cluster resources."""
-    
+
     def __init__(self) -> None:
         """Initialize the Kubernetes client."""
         self.v1: Optional[client.CoreV1Api] = None
         self._config_loaded = False
-    
+
     async def _initialize_client(self) -> None:
         """Initialize the Kubernetes API client."""
         if self._config_loaded:
             return
-            
+
         try:
             # Try to load in-cluster config first (for running in pod)
             config.load_incluster_config()
@@ -99,61 +106,61 @@ class K8sClient:
             except config.ConfigException as e:
                 logger.error(f"Failed to load Kubernetes configuration: {e}")
                 raise
-        
+
         self.v1 = client.CoreV1Api()
         self._config_loaded = True
-    
+
     async def get_all_nodes(self) -> List[Dict[str, Any]]:
         """Fetch all nodes from the Kubernetes cluster.
-        
+
         Returns:
             List of node dictionaries with processed information.
         """
         await self._initialize_client()
         assert self.v1 is not None, "Kubernetes client not initialized"
-        
+
         try:
             nodes_response: V1NodeList = await self.v1.list_node()
             assert nodes_response is not None, "Node list response is None"
             assert nodes_response.items is not None, "Node list items is None"
             nodes = []
-            
+
             for node in nodes_response.items:
                 node_data = self._process_node(node)
                 nodes.append(node_data)
-            
+
             logger.info(f"Retrieved {len(nodes)} nodes from Kubernetes")
             return nodes
-            
+
         except ApiException as e:
             logger.error(f"Failed to fetch nodes from Kubernetes: {e}")
             raise
-    
+
     def _process_node(self, node: V1Node) -> Dict[str, Any]:
         """Process a Kubernetes node object into a dictionary.
-        
+
         Args:
             node: Kubernetes V1Node object
-            
+
         Returns:
             Dictionary with processed node information
         """
         assert node is not None, "Node object is None"
-        
+
         # Extract basic metadata
         metadata = cast(V1ObjectMeta, node.metadata)
         assert metadata is not None, "Node metadata is None"
-        
+
         spec = cast(V1NodeSpec, node.spec)
         assert spec is not None, "Node spec is None"
-        
+
         status = cast(V1NodeStatus, node.status)
         assert status is not None, "Node status is None"
-        
+
         # Extract IP addresses
         internal_ip = None
         external_ip = None
-        
+
         if status.addresses:
             for addr in status.addresses:
                 assert addr is not None, "Address object is None"
@@ -162,11 +169,11 @@ class K8sClient:
                     internal_ip = addr_typed.address
                 elif addr_typed.type == "ExternalIP":
                     external_ip = addr_typed.address
-        
+
         # Determine node readiness
         ready = False
         node_conditions: List[Dict[str, Any]] = []
-        
+
         if status.conditions:
             for condition in status.conditions:
                 assert condition is not None, "Condition object is None"
@@ -174,39 +181,45 @@ class K8sClient:
                 condition_dict = {
                     "type": condition_typed.type,
                     "status": condition_typed.status,
-                    "last_heartbeat_time": condition_typed.last_heartbeat_time.isoformat() if condition_typed.last_heartbeat_time else None,  # fmt: skip
-                    "last_transition_time": condition_typed.last_transition_time.isoformat() if condition_typed.last_transition_time else None,  # fmt: skip
+                    "last_heartbeat_time": condition_typed.last_heartbeat_time.isoformat()
+                    if condition_typed.last_heartbeat_time
+                    else None,  # fmt: skip
+                    "last_transition_time": condition_typed.last_transition_time.isoformat()
+                    if condition_typed.last_transition_time
+                    else None,  # fmt: skip
                     "reason": condition_typed.reason,
                     "message": condition_typed.message,
                 }
                 node_conditions.append(condition_dict)
-                
+
                 if condition_typed.type == "Ready" and condition_typed.status == "True":
                     ready = True
-        
+
         # Extract node info
-        assert status.node_info is not None, "Node is not parsed correctly, missing system info"
+        assert status.node_info is not None, (
+            "Node is not parsed correctly, missing system info"
+        )
         node_info: V1NodeSystemInfo = status.node_info
-        
+
         # Extract resource capacity
         capacity: Dict[str, Any] = status.capacity or {}
 
         # Check if node is schedulable
         schedulable = not (spec.unschedulable or False)
-        
+
         # Extract Tailscale IP from labels or annotations if available
         tailscale_ip = None
         labels = metadata.labels or {}
         annotations = metadata.annotations or {}
-        
+
         # Common Tailscale label/annotation patterns
         tailscale_keys = [
             "tailscale.com/ip",
-            "tailscale/ip", 
+            "tailscale/ip",
             "tailscale.io/ip",
-            "node.tailscale.com/ip"
+            "node.tailscale.com/ip",
         ]
-        
+
         for key in tailscale_keys:
             if key in labels:
                 tailscale_ip = labels[key]
@@ -214,7 +227,7 @@ class K8sClient:
             if key in annotations:
                 tailscale_ip = annotations[key]
                 break
-        
+
         return {
             "name": metadata.name,
             "uid": metadata.uid,
@@ -224,6 +237,7 @@ class K8sClient:
             "hostname": labels.get("kubernetes.io/hostname"),
             "ready": ready,
             "schedulable": schedulable,
+            "location": None,  # Will be set by heuristics or agent
             "status": "Ready" if ready else "NotReady",
             "kubelet_version": node_info.kubelet_version,
             "container_runtime_version": node_info.container_runtime_version,
@@ -231,16 +245,20 @@ class K8sClient:
             "kernel_version": node_info.kernel_version,
             "cpu_capacity": capacity.get("cpu"),
             "memory_capacity": format_memory_human_readable(capacity.get("memory")),
-            "pods_capacity": int(capacity.get("pods", 0)) if capacity.get("pods") else None,
+            "pods_capacity": int(capacity.get("pods", 0))
+            if capacity.get("pods")
+            else None,
             "conditions": json.dumps(node_conditions),
             "labels": json.dumps(labels),
             "annotations": json.dumps(annotations),
-            "node_created_at": metadata.creation_timestamp.replace(tzinfo=None) if metadata.creation_timestamp else None,
+            "node_created_at": metadata.creation_timestamp.replace(tzinfo=None)
+            if metadata.creation_timestamp
+            else None,
         }
-    
+
     async def is_healthy(self) -> bool:
         """Check if the Kubernetes client connection is healthy.
-        
+
         Returns:
             True if connection is healthy, False otherwise.
         """
@@ -249,31 +267,33 @@ class K8sClient:
                 await self._initialize_client()
             except Exception:
                 return False
-        
+
         if self.v1 is None:
             return False
-        
+
         try:
             # Simple API call to test connectivity
-            assert self.v1 is not None, "Kubernetes client became None during health check"
+            assert self.v1 is not None, (
+                "Kubernetes client became None during health check"
+            )
             # Use a simple API call to test connectivity - list nodes with limit 1
             await self.v1.list_node(limit=1)
             return True
         except Exception as e:
             logger.warning(f"Kubernetes client health check failed: {e}")
             return False
-    
+
     async def close(self) -> None:
         """Close the Kubernetes client and cleanup resources."""
         if self.v1 is not None:
             await self.v1.api_client.close()
             logger.info("Kubernetes client closed")
-    
+
     async def __aenter__(self) -> "K8sClient":
         """Async context manager entry."""
         await self._initialize_client()
         return self
-    
+
     async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
         """Async context manager exit."""
         await self.close()

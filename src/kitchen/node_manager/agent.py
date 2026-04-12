@@ -7,6 +7,7 @@ This agent:
 3. Runs with minimal resource footprint
 
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -23,24 +24,24 @@ import aiohttp
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO").upper(),
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    force=True
+    force=True,
 )
 logger = logging.getLogger("node-agent")
 # Force immediate log output
 import sys
+
 for handler in logging.root.handlers:
     handler.flush = sys.stdout.flush
 
 
 class NodeAgent:
     """Lightweight agent for node-to-node connectivity monitoring."""
-    
+
     # Regex pattern to parse ping output
     PING_PATTERN = re.compile(
-        r"(?:time[=<]|time=)(\d+(?:\.\d+)?)(?:\s*ms)?",
-        re.IGNORECASE
+        r"(?:time[=<]|time=)(\d+(?:\.\d+)?)(?:\s*ms)?", re.IGNORECASE
     )
-    
+
     def __init__(
         self,
         api_url: str,
@@ -50,7 +51,7 @@ class NodeAgent:
         ping_timeout: int = 5,
     ) -> None:
         """Initialize the node agent.
-        
+
         Args:
             api_url: URL of the node-manager API server
             node_name: Name of this node (from downward API)
@@ -64,27 +65,48 @@ class NodeAgent:
         self.ping_count = ping_count
         self.ping_timeout = ping_timeout
         self._running = False
-        
-        logger.info(f"Node agent initialized: node={node_name}, api={api_url}, interval={report_interval}s")
-    
+        self.location = "lab"
+
+        logger.info(
+            f"Node agent initialized: node={node_name}, api={api_url}, interval={report_interval}s"
+        )
+
+    async def _fetch_azure_location(self) -> None:
+        """Attempt to fetch location from Azure IMDS."""
+        try:
+            async with aiohttp.ClientSession() as session:
+                headers = {"Metadata": "true"}
+                url = "http://169.254.169.254/metadata/instance/compute/location?api-version=2021-02-01&format=text"
+                async with session.get(url, headers=headers, timeout=2) as resp:
+                    if resp.status == 200:
+                        loc = await resp.text()
+                        if loc:
+                            self.location = f"azure ({loc.strip()})"
+                            logger.info(f"Detected Azure location: {self.location}")
+        except Exception:
+            pass  # Not an Azure node or IMDS unreachable
+
     async def start(self) -> None:
         """Start the agent main loop."""
         self._running = True
         logger.info(f"Starting node agent on {self.node_name}")
-        
+
+        # Try fetching Azure location on startup
+        await self._fetch_azure_location()
+
         while self._running:
             try:
                 await self._run_connectivity_check()
             except Exception as e:
                 logger.error(f"Error in connectivity check: {e}", exc_info=True)
-            
+
             await asyncio.sleep(self.report_interval)
-    
+
     async def stop(self) -> None:
         """Stop the agent."""
         self._running = False
         logger.info("Node agent stopped")
-    
+
     async def _run_connectivity_check(self) -> None:
         """Fetch node list from API, ping each, and report results."""
         try:
@@ -94,23 +116,23 @@ class NodeAgent:
                 if not nodes:
                     logger.warning("No nodes returned from API")
                     return
-                
+
                 # Ping each node (except ourselves)
                 results = []
                 for node in nodes:
                     if node["name"] == self.node_name:
                         continue  # Skip self
-                    
+
                     target_ip = node.get("internal_ip") or node.get("tailscale_ip")
                     if not target_ip:
                         logger.debug(f"No IP for node {node['name']}, skipping")
                         continue
-                    
+
                     result = await self._ping_node(target_ip, node["name"])
                     result["target_node"] = node["name"]
                     result["target_ip"] = target_ip
                     results.append(result)
-                    
+
                     # Log ping failures immediately
                     if not result.get("success"):
                         logger.warning(
@@ -122,18 +144,20 @@ class NodeAgent:
                             f"Ping OK: {self.node_name} -> {node['name']} ({target_ip}): "
                             f"{result.get('latency_ms', 0):.1f}ms"
                         )
-                
+
                 # Report results to API
                 if results:
                     await self._report_connectivity(session, results)
                     logger.info(f"Reported {len(results)} connectivity measurements")
-                    
+
         except aiohttp.ClientError as e:
             logger.error(f"HTTP error communicating with API: {e}")
         except Exception as e:
             logger.error(f"Unexpected error: {e}", exc_info=True)
-    
-    async def _fetch_nodes(self, session: aiohttp.ClientSession) -> List[Dict[str, Any]]:
+
+    async def _fetch_nodes(
+        self, session: aiohttp.ClientSession
+    ) -> List[Dict[str, Any]]:
         """Fetch node list from the API."""
         url = f"{self.api_url}/nodes"
         async with session.get(url, timeout=aiohttp.ClientTimeout(total=30)) as resp:
@@ -141,51 +165,49 @@ class NodeAgent:
                 logger.error(f"Failed to fetch nodes: HTTP {resp.status}")
                 return []
             return await resp.json()
-    
+
     async def _report_connectivity(
-        self, 
-        session: aiohttp.ClientSession, 
-        results: List[Dict[str, Any]]
+        self, session: aiohttp.ClientSession, results: List[Dict[str, Any]]
     ) -> None:
         """Report connectivity measurements to the API."""
         url = f"{self.api_url}/connectivity/report"
         payload = {
             "source_node": self.node_name,
+            "location": self.location,
             "measurements": results,
         }
-        
+
         async with session.post(
-            url, 
-            json=payload,
-            timeout=aiohttp.ClientTimeout(total=30)
+            url, json=payload, timeout=aiohttp.ClientTimeout(total=30)
         ) as resp:
             if resp.status not in (200, 201, 202):
                 body = await resp.text()
-                logger.error(f"Failed to report connectivity: HTTP {resp.status} - {body}")
-    
+                logger.error(
+                    f"Failed to report connectivity: HTTP {resp.status} - {body}"
+                )
+
     async def _ping_node(self, target_ip: str, node_name: str) -> Dict[str, Any]:
         """Ping a node and return results."""
         logger.debug(f"Pinging {target_ip} ({node_name})")
         start_time = datetime.now(timezone.utc)
-        
+
         try:
             cmd = [
                 "ping",
-                "-c", str(self.ping_count),
-                "-W", str(self.ping_timeout),
-                target_ip
+                "-c",
+                str(self.ping_count),
+                "-W",
+                str(self.ping_timeout),
+                target_ip,
             ]
-            
+
             process = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
+                *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
             )
-            
+
             try:
                 stdout, stderr = await asyncio.wait_for(
-                    process.communicate(),
-                    timeout=self.ping_timeout + 5
+                    process.communicate(), timeout=self.ping_timeout + 5
                 )
             except asyncio.TimeoutError:
                 try:
@@ -201,14 +223,14 @@ class NodeAgent:
                     "error_message": f"Ping timeout after {self.ping_timeout}s",
                     "measured_at": start_time.isoformat(),
                 }
-            
+
             return self._parse_ping_output(
                 stdout.decode("utf-8"),
                 stderr.decode("utf-8"),
                 process.returncode or 0,
-                start_time
+                start_time,
             )
-            
+
         except FileNotFoundError:
             logger.error(f"ping command not found in PATH")
             return {
@@ -227,13 +249,9 @@ class NodeAgent:
                 "error_message": str(e),
                 "measured_at": start_time.isoformat(),
             }
-    
+
     def _parse_ping_output(
-        self, 
-        stdout: str, 
-        stderr: str, 
-        return_code: int,
-        start_time: datetime
+        self, stdout: str, stderr: str, return_code: int, start_time: datetime
     ) -> Dict[str, Any]:
         """Parse ping command output."""
         if return_code != 0:
@@ -246,12 +264,16 @@ class NodeAgent:
                 "error_message": error_msg,
                 "measured_at": start_time.isoformat(),
             }
-        
-        lines = stdout.strip().split('\n')
+
+        lines = stdout.strip().split("\n")
         latencies = []
-        
+
         for line in lines:
-            if "packets transmitted" in line or "packet loss" in line or "round-trip" in line:
+            if (
+                "packets transmitted" in line
+                or "packet loss" in line
+                or "round-trip" in line
+            ):
                 continue
             match = self.PING_PATTERN.search(line)
             if match:
@@ -259,7 +281,7 @@ class NodeAgent:
                     latencies.append(float(match.group(1)))
                 except ValueError:
                     pass
-        
+
         # Parse packet loss
         packet_loss = 0.0
         for line in lines:
@@ -271,7 +293,7 @@ class NodeAgent:
                     except ValueError:
                         pass
                 break
-        
+
         if latencies:
             avg_latency = sum(latencies) / len(latencies)
             success = packet_loss < 100
@@ -279,7 +301,7 @@ class NodeAgent:
             avg_latency = None
             packet_loss = 100.0
             success = False
-        
+
         return {
             "success": success,
             "latency_ms": avg_latency,
@@ -292,12 +314,14 @@ class NodeAgent:
 async def main() -> None:
     """Main entry point for the node agent."""
     # Configuration from environment
-    api_url = os.getenv("NODE_MANAGER_API_URL", "http://node-manager.kitchen-system.svc:8000")
+    api_url = os.getenv(
+        "NODE_MANAGER_API_URL", "http://node-manager.kitchen-system.svc:8000"
+    )
     node_name = os.getenv("NODE_NAME", socket.gethostname())
     report_interval = int(os.getenv("REPORT_INTERVAL", "60"))
     ping_count = int(os.getenv("PING_COUNT", "4"))
     ping_timeout = int(os.getenv("PING_TIMEOUT", "5"))
-    
+
     agent = NodeAgent(
         api_url=api_url,
         node_name=node_name,
@@ -305,7 +329,7 @@ async def main() -> None:
         ping_count=ping_count,
         ping_timeout=ping_timeout,
     )
-    
+
     try:
         await agent.start()
     except KeyboardInterrupt:
