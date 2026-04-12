@@ -349,6 +349,14 @@ class NodePools:
                         if p.azure is not None
                         else None
                     ),
+                    "aws": (
+                        {
+                            "asg_name": getattr(p.aws, "asg_name", ""),
+                            "region": getattr(p.aws, "region", ""),
+                        }
+                        if getattr(p, "aws", None) is not None
+                        else None
+                    ),
                     "ssh": {
                         "username": p.ssh.username,
                         "password": p.ssh.password,
@@ -380,6 +388,14 @@ class NodePools:
                         if p.azure is not None
                         else None
                     ),
+                    "aws": (
+                        {
+                            "asg_name": getattr(p.aws, "asg_name", ""),
+                            "region": getattr(p.aws, "region", ""),
+                        }
+                        if getattr(p, "aws", None) is not None
+                        else None
+                    ),
                     "ssh": {
                         "username": p.ssh.username,
                         "password": p.ssh.password,
@@ -402,6 +418,7 @@ class NodePools:
         provider: str,
         azure_vmss_name: Optional[str],
         azure_resource_group: Optional[str],
+        aws_asg_name: Optional[str],
         ssh_username: str,
         ssh_password: Optional[str],
         ssh_key_path: Optional[str],
@@ -462,6 +479,7 @@ class NodePools:
             )
             raise typer.Exit(1)
 
+        aws_cfg = None
         azure_cfg = None
         if provider_norm == "azure":
             if bool(azure_vmss_name) ^ bool(azure_resource_group):
@@ -476,12 +494,20 @@ class NodePools:
                     resource_group=azure_resource_group,
                 )
 
+        if provider_norm == "aws":
+            if not aws_asg_name:
+                typer.secho("❌ For AWS pools, --aws-asg must be provided.", fg=typer.colors.RED)
+                raise typer.Exit(1)
+            from kitchen.config.models import NodePoolAwsConfig
+            aws_cfg = NodePoolAwsConfig(asg_name=aws_asg_name, region=region)
+
         new_pool = NodePool(
             name=name,
             region=region,
             size=size,
             provider=provider,
             azure=azure_cfg,
+            aws=aws_cfg,
             ssh=NodePoolSSH(
                 username=ssh_username,
                 password=ssh_password,
@@ -546,6 +572,7 @@ class NodePools:
         target_pool: NodePool | None = None
         target_provider: str | None = None
         target_azure = None
+        target_aws = None
         updated = False
         new_list: list[NodePool] = []
         for p in pools_cfg.node_pools:
@@ -556,6 +583,7 @@ class NodePools:
             target_pool = p
             target_provider = (p.provider or "").strip().lower()
             target_azure = p.azure
+            target_aws = p.aws
             new_list.append(
                 NodePool(
                     name=p.name,
@@ -563,6 +591,7 @@ class NodePools:
                     size=size,
                     provider=p.provider,
                     azure=p.azure,
+                    aws=p.aws,
                     ssh=p.ssh,
                 )
             )
@@ -631,6 +660,46 @@ class NodePools:
                 raise typer.Exit(1)
             except Exception as e:
                 typer.secho(f"❌ Azure scale failed: {e}", fg=typer.colors.RED)
+                raise typer.Exit(1)
+
+        elif target_provider == "aws":
+            from kitchen.node_provider.aws import AwsNodeProvider
+
+            try:
+                typer.secho(f"⏳ Scaling AWS node pool '{pool_name}' to size={size}…", fg=typer.colors.YELLOW)
+                if target_aws is None:
+                    typer.secho(
+                        f"❌ Pool '{pool_name}' is provider=aws but has no aws config.",
+                        fg=typer.colors.RED,
+                    )
+                    raise typer.Exit(1)
+                provider = AwsNodeProvider(
+                    asg_name=target_aws.asg_name,
+                    region=target_aws.region,
+                )
+                output = provider.scale_pool(pool_name, size)
+
+                if output:
+                    typer.echo(output)
+
+                # After scaling, list instances and show their status
+                typer.secho(f"\n🔍 Listing AWS instances for '{pool_name}'…", fg=typer.colors.CYAN)
+                instances = provider.list_instances()
+                if not instances:
+                    typer.secho("No instances found.", fg=typer.colors.YELLOW)
+                else:
+                    for inst in instances:
+                        ip_display = inst.public_ip or inst.private_ip or "No IP"
+                        typer.secho(
+                            f"   • {inst.name} ({inst.instance_id}): "
+                            f"Power={inst.power_state}, IP={ip_display}",
+                            fg=typer.colors.GREEN if inst.power_state == "running" else typer.colors.YELLOW,
+                        )
+                        # Queue for joining if applicable
+                        if inst.power_state == "running" and inst.public_ip:
+                            instances_to_join.append((inst.public_ip, inst.name))
+            except Exception as e:
+                typer.secho(f"❌ Failed to scale AWS pool '{pool_name}': {e}", fg=typer.colors.RED)
                 raise typer.Exit(1)
 
         ok, msg = ConfigManager.save_node_pools(
@@ -793,6 +862,9 @@ def add_pool(
     azure_resource_group: Optional[str] = typer.Option(
         None, "--azure-resource-group", help="Azure resource group (azure only)"
     ),
+    aws_asg_name: Optional[str] = typer.Option(
+        None, "--aws-asg", help="AWS Auto Scaling Group name (aws only)"
+    ),
     ssh_username: str = typer.Option("root", "--ssh-username", help="SSH username (default: root)"),
     ssh_password: Optional[str] = typer.Option(None, "--ssh-password", help="SSH password (optional)"),
     ssh_key_path: Optional[str] = typer.Option(None, "--ssh-key-path", help="SSH private key path (optional)"),
@@ -811,6 +883,7 @@ def add_pool(
         provider=provider,
         azure_vmss_name=azure_vmss_name,
         azure_resource_group=azure_resource_group,
+        aws_asg_name=aws_asg_name,
         ssh_username=ssh_username,
         ssh_password=ssh_password,
         ssh_key_path=ssh_key_path,

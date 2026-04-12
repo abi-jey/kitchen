@@ -40,6 +40,19 @@ class NodePoolAzureConfig:
 
 
 @dataclass(slots=True)
+class NodePoolAwsConfig:
+    """AWS-specific configuration for a node pool.
+
+    Attributes:
+        asg_name: AWS Auto Scaling Group name.
+        region: AWS region.
+    """
+
+    asg_name: str
+    region: str = "us-east-1"
+
+
+@dataclass(slots=True)
 class NodePool:
     """Configuration for a node pool.
 
@@ -57,6 +70,7 @@ class NodePool:
     ssh: NodePoolSSH
     region: str = "global"
     azure: Optional[NodePoolAzureConfig] = None
+    aws: Optional[NodePoolAwsConfig] = None
 
 
 @dataclass(slots=True)
