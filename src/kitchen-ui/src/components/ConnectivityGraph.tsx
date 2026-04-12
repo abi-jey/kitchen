@@ -49,6 +49,7 @@ interface ConnectivityGraphViewProps {
 
 // Store for persisting node positions across renders
 const nodePositions = new Map<string, { x: number; y: number }>();
+let savedZoomTransform = d3.zoomIdentity;
 
 export const ConnectivityGraphView: React.FC<ConnectivityGraphViewProps> = ({
   refreshInterval = 30000,
@@ -256,12 +257,14 @@ export const ConnectivityGraphView: React.FC<ConnectivityGraphViewProps> = ({
       })
       .on('zoom', (event) => {
         g.attr('transform', event.transform);
+        savedZoomTransform = event.transform;
       });
 
     svg.call(zoom);
+    svg.call(zoom.transform, savedZoomTransform);
 
     // Create main group for zoom/pan
-    const g = svg.append('g');
+    const g = svg.append('g').attr('transform', savedZoomTransform.toString());
 
     // Create arrow markers
     const defs = svg.append('defs');
@@ -670,7 +673,9 @@ export const ConnectivityGraphView: React.FC<ConnectivityGraphViewProps> = ({
       // Update edge label backgrounds
       edges.select('.edge-label-bg')
         .each(function(d) {
-          const label = d3.select(this.parentNode as Element).select('.edge-label');
+          const el = this as Element;
+          if (!el.parentNode) return;
+          const label = d3.select(el.parentNode as Element).select('.edge-label');
           const text = label.text();
           if (!text) {
             d3.select(this).attr('width', 0).attr('height', 0);
