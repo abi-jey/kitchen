@@ -1037,19 +1037,21 @@ async def get_connectivity_graph(
                 )
             )
 
-        # Get latest connectivity for edges
+        # Get latest connectivity for edges between each source-target pair
         subq = (
             select(
+                NodeConnectivity.source_node,
                 NodeConnectivity.node_name,
                 func.max(cast(Any, NodeConnectivity.measured_at)).label("max_at"),
             )
-            .group_by(NodeConnectivity.node_name)
+            .group_by(NodeConnectivity.source_node, NodeConnectivity.node_name)
             .subquery()
         )
 
         conn_stmt = select(NodeConnectivity).join(
             subq,
             and_(
+                NodeConnectivity.source_node == subq.c.source_node,
                 NodeConnectivity.node_name == subq.c.node_name,
                 cast(Any, NodeConnectivity.measured_at) == subq.c.max_at,
             ),
@@ -1059,19 +1061,23 @@ async def get_connectivity_graph(
         connectivity_records = conn_result.scalars().all()
 
         # Build edges from node-manager to each node
+        valid_node_ids = {n.id for n in graph_nodes}
         graph_edges: List[GraphEdge] = []
         for conn in connectivity_records:
             source = getattr(conn, "source_node", "node-manager")
-            graph_edges.append(
-                GraphEdge(
-                    source=source,
-                    target=conn.node_name,
-                    latency_ms=conn.latency_ms,
-                    success=conn.success,
-                    packet_loss=conn.packet_loss,
-                    measured_at=conn.measured_at,
+
+            # Only include edges if BOTH the source and target are currently valid nodes
+            if source in valid_node_ids and conn.node_name in valid_node_ids:
+                graph_edges.append(
+                    GraphEdge(
+                        source=source,
+                        target=conn.node_name,
+                        latency_ms=conn.latency_ms,
+                        success=conn.success,
+                        packet_loss=conn.packet_loss,
+                        measured_at=conn.measured_at,
+                    )
                 )
-            )
 
         return ConnectivityGraph(nodes=graph_nodes, edges=graph_edges)
 
