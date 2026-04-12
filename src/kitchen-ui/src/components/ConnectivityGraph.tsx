@@ -699,7 +699,18 @@ export const ConnectivityGraphView: React.FC<ConnectivityGraphViewProps> = ({
       simulationRef.current = d3.forceSimulation(d3Nodes)
         .force('link', d3.forceLink(d3Edges)
           .id((d: any) => d.id)
-          .distance(250)
+          .distance((d: any) => {
+            const baseDistance = 250;
+            if (!d.measured_at || !d.success || d.latency_ms === null) {
+              return baseDistance * 3; // Default far distance for unknown/failed links
+            }
+            
+            // Use logarithmic scaling for distance based on latency
+            // 1ms -> 1x, 10ms -> 2x, 100ms -> 3x
+            const latency = Math.max(1, Math.min(d.latency_ms, 2000));
+            const multiplier = 1 + Math.log10(latency);
+            return baseDistance * multiplier;
+          })
         )
         .force('charge', d3.forceManyBody().strength(-800))
         .force('center', d3.forceCenter(width / 2, height / 2))
