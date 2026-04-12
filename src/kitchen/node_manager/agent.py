@@ -65,7 +65,7 @@ class NodeAgent:
         self.ping_count = ping_count
         self.ping_timeout = ping_timeout
         self._running = False
-        self.location = "lab"
+        self.location = None
 
         logger.info(
             f"Node agent initialized: node={node_name}, api={api_url}, interval={report_interval}s"

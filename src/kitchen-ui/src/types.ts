@@ -40,6 +40,7 @@ export interface GraphNode {
   kubelet_version: string | null;
   cpu_capacity: string | null;
   memory_capacity: string | null;
+  location?: string | null;
 }
 
 export interface GraphEdge {

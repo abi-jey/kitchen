@@ -199,7 +199,7 @@ export const ConnectivityGraphView: React.FC<ConnectivityGraphViewProps> = ({
     const d3Nodes: D3Node[] = clusterNodes.map((node, index) => {
       const savedPos = nodePositions.get(node.id);
       if (savedPos) {
-        return { ...node, x: savedPos.x, y: savedPos.y, fx: savedPos.x, fy: savedPos.y, location: 'lab' };
+        return { ...node, x: savedPos.x, y: savedPos.y, fx: savedPos.x, fy: savedPos.y, location: node.location || 'lab' };
       }
       // Initial diagonal layout for new nodes - ensures curves look good from start
       // Each node is placed diagonally so both X and Y differ, creating nice S-curves
@@ -210,7 +210,7 @@ export const ConnectivityGraphView: React.FC<ConnectivityGraphViewProps> = ({
         ...node,
         x: startX + index * spacing,
         y: startY + index * spacing,
-        location: 'lab',
+        location: node.location || 'lab',
       };
     });
 
