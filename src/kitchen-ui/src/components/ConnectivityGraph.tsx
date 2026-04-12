@@ -260,11 +260,11 @@ export const ConnectivityGraphView: React.FC<ConnectivityGraphViewProps> = ({
         savedZoomTransform = event.transform;
       });
 
-    svg.call(zoom);
-    svg.call(zoom.transform, savedZoomTransform);
-
     // Create main group for zoom/pan
     const g = svg.append('g').attr('transform', savedZoomTransform.toString());
+
+    svg.call(zoom);
+    svg.call(zoom.transform, savedZoomTransform);
 
     // Create arrow markers
     const defs = svg.append('defs');
