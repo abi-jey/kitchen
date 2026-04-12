@@ -86,13 +86,41 @@ class NodeAgent:
         except Exception:
             pass  # Not an Azure node or IMDS unreachable
 
+    async def _fetch_aws_location(self) -> None:
+        """Attempt to fetch location from AWS IMDS."""
+        try:
+            async with aiohttp.ClientSession() as session:
+                # Try IMDSv2
+                token_url = "http://169.254.169.254/latest/api/token"
+                token_headers = {"X-aws-ec2-metadata-token-ttl-seconds": "21600"}
+                async with session.put(
+                    token_url, headers=token_headers, timeout=2
+                ) as token_resp:
+                    if token_resp.status == 200:
+                        token = await token_resp.text()
+                        headers = {"X-aws-ec2-metadata-token": token}
+                        url = "http://169.254.169.254/latest/meta-data/placement/region"
+                        async with session.get(url, headers=headers, timeout=2) as resp:
+                            if resp.status == 200:
+                                loc = await resp.text()
+                                if loc:
+                                    self.location = f"aws ({loc.strip()})"
+                                    logger.info(
+                                        f"Detected AWS location: {self.location}"
+                                    )
+                                    return
+        except Exception:
+            pass  # Not an AWS node or IMDS unreachable
+
     async def start(self) -> None:
         """Start the agent main loop."""
         self._running = True
         logger.info(f"Starting node agent on {self.node_name}")
 
-        # Try fetching Azure location on startup
+        # Try fetching location on startup
         await self._fetch_azure_location()
+        if not self.location:
+            await self._fetch_aws_location()
 
         while self._running:
             try:
